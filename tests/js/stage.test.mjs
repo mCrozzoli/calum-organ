@@ -15,6 +15,17 @@ test("note names and frequencies", () => {
   assert.ok(near(st.midiToFreq(57), 220));
 });
 
+test("quarter tones", () => {
+  assert.equal(st.noteName(60.5), "C4+¼");
+  assert.equal(st.noteName(61.5), "C#4+¼");
+  assert.equal(st.noteName(71.5), "B4+¼");          // not "C5": stays on B's octave
+  assert.equal(st.isQuarterTone(60.5), true);
+  assert.equal(st.isQuarterTone(60), false);
+  // a quarter tone is half a semitone: frequency ratio 2^(1/24)
+  assert.ok(near(st.midiToFreq(69.5) / st.midiToFreq(69), 2 ** (1 / 24)));
+  assert.ok(near(st.midiToFreq(69.5), 452.8929841231, 1e-6));
+});
+
 test("placement: front, right, left, behind, distance", () => {
   const me = { x: 0.5, y: 0.5 };
   const at = (x, y) => st.placement({ x, y }, me, 12);
@@ -51,14 +62,18 @@ test("stored settings are cleaned, never trusted", () => {
   assert.deepEqual(st.sanitizeStage(null), d);
   assert.deepEqual(st.sanitizeStage("nonsense"), d);
   const s = st.sanitizeStage({
-    pipes: [{ x: 2, y: -1, note: 200 }, { x: "a", note: 1.5 }],
+    pipes: [{ x: 2, y: -1, note: 200 }, { x: "a", note: "C4" }, { x: 0.5, y: 0.5, note: 60.3 },
+            { x: 0.5, y: 0.5, note: 60.2 }, { x: 0.5, y: 0.5, note: 1 }],
     listener: { x: 0.1 },
     room: "constructor",
     output: "bluetooth",
     volume: 7,
   });
-  assert.deepEqual(s.pipes[0], { x: 1, y: 0, note: st.MAX_NOTE });
+  assert.deepEqual(s.pipes[0], { x: 1, y: 0, note: st.TOP_NOTE });
   assert.deepEqual(s.pipes[1], d.pipes[1]);
+  assert.equal(s.pipes[2].note, 60.5);              // snapped to the nearest quarter tone
+  assert.equal(s.pipes[3].note, 60);
+  assert.equal(s.pipes[4].note, st.MIN_NOTE);
   assert.deepEqual(s.listener, { x: 0.1, y: d.listener.y });
   assert.equal(s.room, "medium");
   assert.equal(s.output, "headphones");

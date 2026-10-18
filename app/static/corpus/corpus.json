@@ -1,0 +1,623 @@
+{
+ "name": "Chapel organ, manual 3, quiet stop",
+ "credit": "Organ sampled by Simon Dalzell (Ivy Audio), Winter 2015-16, for Versilian Studios Chamber Orchestra 2: Community Edition",
+ "license": "CC0-1.0",
+ "url": "https://github.com/sgossner/VSCO-2-CE/tree/master/Keys/Organ/Quiet",
+ "processing": "tools/build_corpus.py: left microphone, trimmed, pitch measured, loop with baked crossfade, levelled, Ogg Opus 80 kbps",
+ "samples": [
+  {
+   "file": "organ-C2.ogg",
+   "note": "C2",
+   "midi": 35.986,
+   "f0": 65.355,
+   "loopStart": 1.502813,
+   "loopEnd": 3.996875,
+   "duration": 4.0469,
+   "attack": 0.405,
+   "harmonics": [
+    1.0,
+    0.0285,
+    0.5613,
+    0.0634,
+    0.013,
+    0.0104,
+    0.0053,
+    0.0057
+   ],
+   "source": "NT5_Man3Quiet_122_rr1.wav",
+   "sourceSha256": "daad4df8c2cd9444a6ff04269149ea92dace2326c481cc6a07da67d7a2e5e76d"
+  },
+  {
+   "file": "organ-Ds2.ogg",
+   "note": "D#2",
+   "midi": 39.026,
+   "f0": 77.898,
+   "loopStart": 1.501187,
+   "loopEnd": 4.004458,
+   "duration": 4.0545,
+   "attack": 0.145,
+   "harmonics": [
+    1.0,
+    0.5657,
+    63.7967,
+    1.3875,
+    2.5611,
+    1.2186,
+    0.9014,
+    0.1998
+   ],
+   "source": "NT5_Man3Quiet_125_rr1.wav",
+   "sourceSha256": "f92037a1ad643c330b22257484e591a3712532e577ce10d0eb9dda2b45a63d41"
+  },
+  {
+   "file": "organ-Fs2.ogg",
+   "note": "F#2",
+   "midi": 42.089,
+   "f0": 92.973,
+   "loopStart": 1.51,
+   "loopEnd": 4.005333,
+   "duration": 4.0553,
+   "attack": 0.07,
+   "harmonics": [
+    1.0,
+    0.0021,
+    0.0852,
+    0.0066,
+    0.0129,
+    0.0025,
+    0.0021,
+    0.0011
+   ],
+   "source": "NT5_Man3Quiet_128_rr1.wav",
+   "sourceSha256": "0a85d53636f262c91730a808ef2c38ae0a8d2bd9fe1b39795526a77e062de29e"
+  },
+  {
+   "file": "organ-A2.ogg",
+   "note": "A2",
+   "midi": 45.005,
+   "f0": 110.034,
+   "loopStart": 1.51,
+   "loopEnd": 4.009229,
+   "duration": 4.0592,
+   "attack": 0.27,
+   "harmonics": [
+    1.0,
+    0.0022,
+    0.1223,
+    0.0046,
+    0.0245,
+    0.0004,
+    0.0009,
+    0.0006
+   ],
+   "source": "NT5_Man3Quiet_131_rr1.wav",
+   "sourceSha256": "f19bf401923e49178fd88a0bc3076de35a5ef5af3ca1afb75f721ae9fd6214cc"
+  },
+  {
+   "file": "organ-C3.ogg",
+   "note": "C3",
+   "midi": 47.991,
+   "f0": 130.743,
+   "loopStart": 1.51,
+   "loopEnd": 4.011083,
+   "duration": 4.0611,
+   "attack": 0.265,
+   "harmonics": [
+    1.0,
+    0.0018,
+    0.1829,
+    0.0002,
+    0.0447,
+    0.0011,
+    0.0052,
+    0.0024
+   ],
+   "source": "NT5_Man3Quiet_134_rr1.wav",
+   "sourceSha256": "5906348057006cfa5451a2cb3f02b8cd639d89f9ddf3cc98df3102f5c942cd5a"
+  },
+  {
+   "file": "organ-Ds3.ogg",
+   "note": "D#3",
+   "midi": 51.027,
+   "f0": 155.805,
+   "loopStart": 1.509396,
+   "loopEnd": 4.012521,
+   "duration": 4.0625,
+   "attack": 0.125,
+   "harmonics": [
+    1.0,
+    0.0043,
+    0.186,
+    0.0019,
+    0.0372,
+    0.0005,
+    0.003,
+    0.0005
+   ],
+   "source": "NT5_Man3Quiet_137_rr1.wav",
+   "sourceSha256": "eb92c50999e9a117939de73e74b263730b66eadbdb868f67b9bd89681ed8f113"
+  },
+  {
+   "file": "organ-Fs3.ogg",
+   "note": "F#3",
+   "midi": 54.059,
+   "f0": 185.624,
+   "loopStart": 1.51,
+   "loopEnd": 4.009667,
+   "duration": 4.0597,
+   "attack": 0.47,
+   "harmonics": [
+    1.0,
+    0.0041,
+    0.049,
+    0.0028,
+    0.006,
+    0.0014,
+    0.0003,
+    0.0003
+   ],
+   "source": "NT5_Man3Quiet_140_rr1.wav",
+   "sourceSha256": "3afa6caad64d5ef3c527b8bc4c22b7a0c55bc5dfaa6701c8b2b98c53de5876ae"
+  },
+  {
+   "file": "organ-A3.ogg",
+   "note": "A3",
+   "midi": 57.038,
+   "f0": 220.482,
+   "loopStart": 1.51,
+   "loopEnd": 4.009083,
+   "duration": 4.0591,
+   "attack": 0.205,
+   "harmonics": [
+    1.0,
+    0.0143,
+    1.8015,
+    0.0077,
+    0.041,
+    0.026,
+    0.0002,
+    0.0042
+   ],
+   "source": "NT5_Man3Quiet_143_rr1.wav",
+   "sourceSha256": "c39ec6c7e26dee6a3661e54a96c4a2a04bce08130864244458a7db1b627b3c93"
+  },
+  {
+   "file": "organ-C4.ogg",
+   "note": "C4",
+   "midi": 60.029,
+   "f0": 262.067,
+   "loopStart": 1.51,
+   "loopEnd": 4.009354,
+   "duration": 4.0594,
+   "attack": 0.215,
+   "harmonics": [
+    1.0,
+    0.0214,
+    0.4194,
+    0.0098,
+    0.0105,
+    0.0034,
+    0.0017,
+    0.003
+   ],
+   "source": "NT5_Man3Quiet_146_rr1.wav",
+   "sourceSha256": "55b246625c8a2fe71c271d2335ba6cc5f12d3cd48cc691aa047197b7f825084f"
+  },
+  {
+   "file": "organ-Ds4.ogg",
+   "note": "D#4",
+   "midi": 63.003,
+   "f0": 311.18,
+   "loopStart": 1.51,
+   "loopEnd": 4.010167,
+   "duration": 4.0602,
+   "attack": 0.2,
+   "harmonics": [
+    1.0,
+    0.006,
+    0.3334,
+    0.0035,
+    0.0093,
+    0.0005,
+    0.0011,
+    0.0004
+   ],
+   "source": "NT5_Man3Quiet_149_rr1.wav",
+   "sourceSha256": "fa2784dca7e6ef639be46a2d9f129f480755b678c9cce145d257bb59839a77a9"
+  },
+  {
+   "file": "organ-Fs4.ogg",
+   "note": "F#4",
+   "midi": 66.001,
+   "f0": 370.018,
+   "loopStart": 1.51,
+   "loopEnd": 4.009875,
+   "duration": 4.0599,
+   "attack": 0.23,
+   "harmonics": [
+    1.0,
+    0.01,
+    0.1273,
+    0.0016,
+    0.0006,
+    0.0004,
+    0.0005,
+    0.0002
+   ],
+   "source": "NT5_Man3Quiet_152_rr1.wav",
+   "sourceSha256": "7ad4206bebfaffe36d3c506e55670abf4a5bed9c72d52a8eea44fe5a20c62b9a"
+  },
+  {
+   "file": "organ-A4.ogg",
+   "note": "A4",
+   "midi": 68.968,
+   "f0": 439.189,
+   "loopStart": 1.51,
+   "loopEnd": 4.010063,
+   "duration": 4.0601,
+   "attack": 0.14,
+   "harmonics": [
+    1.0,
+    0.0457,
+    0.2376,
+    0.0211,
+    0.0052,
+    0.0147,
+    0.004,
+    0.0021
+   ],
+   "source": "NT5_Man3Quiet_155_rr1.wav",
+   "sourceSha256": "97df359ea6827d9b751cf85de91fb460d8c95871cb98dff0441494bc35ca1cb1"
+  },
+  {
+   "file": "organ-C5.ogg",
+   "note": "C5",
+   "midi": 71.963,
+   "f0": 522.136,
+   "loopStart": 1.51,
+   "loopEnd": 4.009354,
+   "duration": 4.0594,
+   "attack": 0.03,
+   "harmonics": [
+    1.0,
+    0.1091,
+    0.2362,
+    0.008,
+    0.0019,
+    0.0074,
+    0.0012,
+    0.0031
+   ],
+   "source": "NT5_Man3Quiet_158_rr1.wav",
+   "sourceSha256": "14f3a97253046b883e9689d9fb5420b9eb69e7b65564e2396b5098f245b0cd10"
+  },
+  {
+   "file": "organ-Ds5.ogg",
+   "note": "D#5",
+   "midi": 74.965,
+   "f0": 620.985,
+   "loopStart": 1.51,
+   "loopEnd": 4.00925,
+   "duration": 4.0592,
+   "attack": 0.345,
+   "harmonics": [
+    1.0,
+    0.0078,
+    0.0914,
+    0.004,
+    0.0011,
+    0.0036,
+    0.0009,
+    0.0008
+   ],
+   "source": "NT5_Man3Quiet_161_rr1.wav",
+   "sourceSha256": "f7547dc90d06e1329420f3e9db4b11d0cb616878357949884dd411ce693fc508"
+  },
+  {
+   "file": "organ-Fs5.ogg",
+   "note": "F#5",
+   "midi": 77.984,
+   "f0": 739.295,
+   "loopStart": 1.51,
+   "loopEnd": 4.009688,
+   "duration": 4.0597,
+   "attack": 0.01,
+   "harmonics": [
+    1.0,
+    0.0356,
+    0.1549,
+    0.0358,
+    0.0008,
+    0.0056,
+    0.0016,
+    0.0013
+   ],
+   "source": "NT5_Man3Quiet_164_rr1.wav",
+   "sourceSha256": "e7e1996aaf564294f3c0476592b3055fc00e6e6d19348172ea604170a1b07076"
+  },
+  {
+   "file": "organ-A5.ogg",
+   "note": "A5",
+   "midi": 81.001,
+   "f0": 880.069,
+   "loopStart": 1.51,
+   "loopEnd": 4.009812,
+   "duration": 4.0598,
+   "attack": 0.05,
+   "harmonics": [
+    1.0,
+    0.047,
+    0.0355,
+    0.0065,
+    0.0019,
+    0.0023,
+    0.0007,
+    0.0004
+   ],
+   "source": "NT5_Man3Quiet_167_rr1.wav",
+   "sourceSha256": "9b23b50db700b4b881ddac02ca8d99922d745c3cd9fcc31022b0fa48a2eec31c"
+  },
+  {
+   "file": "organ-C6.ogg",
+   "note": "C6",
+   "midi": 83.965,
+   "f0": 1044.395,
+   "loopStart": 1.51,
+   "loopEnd": 4.010021,
+   "duration": 4.06,
+   "attack": 0.155,
+   "harmonics": [
+    1.0,
+    0.0151,
+    0.0026,
+    0.0023,
+    0.0002,
+    0.0019,
+    0.0003,
+    0.0006
+   ],
+   "source": "NT5_Man3Quiet_170_rr1.wav",
+   "sourceSha256": "16c3916dbf17c878d4430fd4c5fe7b15aeb4fd0c568f651d05149b22e72c8bc8"
+  }
+ ],
+ "model": [
+  {
+   "midi": 35.986,
+   "harmonics": [
+    1.0,
+    0.0285,
+    0.5613,
+    0.0634,
+    0.013,
+    0.0104,
+    0.0053,
+    0.0057
+   ],
+   "attack": 0.145
+  },
+  {
+   "midi": 39.026,
+   "harmonics": [
+    1.0,
+    0.0285,
+    0.5613,
+    0.0634,
+    0.0245,
+    0.0104,
+    0.0053,
+    0.0057
+   ],
+   "attack": 0.27
+  },
+  {
+   "midi": 42.089,
+   "harmonics": [
+    1.0,
+    0.0022,
+    0.1829,
+    0.0066,
+    0.0245,
+    0.0025,
+    0.0052,
+    0.0024
+   ],
+   "attack": 0.265
+  },
+  {
+   "midi": 45.005,
+   "harmonics": [
+    1.0,
+    0.0022,
+    0.1829,
+    0.0046,
+    0.0372,
+    0.0011,
+    0.003,
+    0.0011
+   ],
+   "attack": 0.145
+  },
+  {
+   "midi": 47.991,
+   "harmonics": [
+    1.0,
+    0.0022,
+    0.1223,
+    0.0028,
+    0.0245,
+    0.0011,
+    0.0021,
+    0.0006
+   ],
+   "attack": 0.265
+  },
+  {
+   "midi": 51.027,
+   "harmonics": [
+    1.0,
+    0.0041,
+    0.1829,
+    0.0028,
+    0.0372,
+    0.0011,
+    0.0009,
+    0.0006
+   ],
+   "attack": 0.265
+  },
+  {
+   "midi": 54.059,
+   "harmonics": [
+    1.0,
+    0.0043,
+    0.186,
+    0.0028,
+    0.0372,
+    0.0014,
+    0.0017,
+    0.0024
+   ],
+   "attack": 0.215
+  },
+  {
+   "midi": 57.038,
+   "harmonics": [
+    1.0,
+    0.006,
+    0.3334,
+    0.0035,
+    0.0105,
+    0.0014,
+    0.0011,
+    0.0005
+   ],
+   "attack": 0.205
+  },
+  {
+   "midi": 60.029,
+   "harmonics": [
+    1.0,
+    0.01,
+    0.3334,
+    0.0035,
+    0.0093,
+    0.0014,
+    0.0005,
+    0.0004
+   ],
+   "attack": 0.215
+  },
+  {
+   "midi": 63.003,
+   "harmonics": [
+    1.0,
+    0.0143,
+    0.3334,
+    0.0077,
+    0.0093,
+    0.0034,
+    0.0011,
+    0.0021
+   ],
+   "attack": 0.205
+  },
+  {
+   "midi": 66.001,
+   "harmonics": [
+    1.0,
+    0.0214,
+    0.2376,
+    0.008,
+    0.0052,
+    0.0034,
+    0.0012,
+    0.0021
+   ],
+   "attack": 0.2
+  },
+  {
+   "midi": 68.968,
+   "harmonics": [
+    1.0,
+    0.01,
+    0.2362,
+    0.004,
+    0.0019,
+    0.0036,
+    0.0011,
+    0.0008
+   ],
+   "attack": 0.2
+  },
+  {
+   "midi": 71.963,
+   "harmonics": [
+    1.0,
+    0.0356,
+    0.1549,
+    0.008,
+    0.0011,
+    0.0056,
+    0.0012,
+    0.0013
+   ],
+   "attack": 0.14
+  },
+  {
+   "midi": 74.965,
+   "harmonics": [
+    1.0,
+    0.0457,
+    0.1549,
+    0.008,
+    0.0019,
+    0.0056,
+    0.0012,
+    0.0013
+   ],
+   "attack": 0.05
+  },
+  {
+   "midi": 77.984,
+   "harmonics": [
+    1.0,
+    0.0356,
+    0.0914,
+    0.0065,
+    0.0011,
+    0.0036,
+    0.0009,
+    0.0008
+   ],
+   "attack": 0.05
+  },
+  {
+   "midi": 81.001,
+   "harmonics": [
+    1.0,
+    0.0356,
+    0.0914,
+    0.0065,
+    0.0011,
+    0.0036,
+    0.0009,
+    0.0008
+   ],
+   "attack": 0.155
+  },
+  {
+   "midi": 83.965,
+   "harmonics": [
+    1.0,
+    0.0356,
+    0.0355,
+    0.0065,
+    0.0008,
+    0.0023,
+    0.0007,
+    0.0006
+   ],
+   "attack": 0.05
+  }
+ ]
+}

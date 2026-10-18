@@ -19,6 +19,11 @@ v1.1 has only been tested against the simulator and demo organ.
 ## Listening stage
 
 - [ ] Set the default pitches to the real pipes' notes once known.
+- [ ] Record Calum's own pipes (one note each, valve open ~6 s) and build
+      them into the corpus with `tools/build_corpus.py`: the simulation would
+      then sound like the real organ.
+- [ ] Optional: the organ's blower noise under the pipes (VSCO 2 CE has
+      `Keys/Organ/Rode_Blower.wav`, CC0).
 - [ ] Include the stage layout and pitches in preset export/import.
 - [ ] Optional: a measured-HRTF mode for convincing front/back (e.g.
       a Web Audio `PannerNode` fed by a multichannel SuperSonic output, or

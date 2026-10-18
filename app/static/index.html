@@ -65,6 +65,7 @@
           <button id="exportPresets" role="menuitem">Export presets…</button>
           <button id="importPresets" role="menuitem">Import presets…</button>
           <button id="updateFirmware" role="menuitem">Update board firmware…</button>
+          <button id="openAbout" role="menuitem">About &amp; credits…</button>
         </div>
       </details>
       <input type="file" id="importFile" accept="application/json,.json" hidden>
@@ -98,6 +99,7 @@
         <h2 id="stageTitle">Listen <span class="sub">simulated pipes · SuperCollider in the browser</span></h2>
         <div class="stage-controls">
           <button id="soundBtn" class="accent" aria-pressed="false">🔊 Sound on</button>
+          <select id="sourceSelect" aria-label="Sound source"></select>
           <label class="ctl">Volume <input type="range" id="volumeInput" min="0" max="1" step="0.01"></label>
           <select id="outputSelect" aria-label="Output">
             <option value="headphones">🎧 Headphones (3D)</option>
@@ -140,7 +142,60 @@
     </details>
   </main>
 
+  <footer class="credits-footer">
+    <p>Organ and concept: Calum · Software: Miguel Angel Crozzoli ·
+      Built with Claude AI as a co-designing agent.</p>
+    <p>Sound: SuperCollider, compiled to WebAssembly, running in your browser ·
+      Organ recordings: Simon Dalzell, VSCO 2 CE (CC0) ·
+      <button type="button" class="link" id="openAboutFooter">About &amp; credits</button></p>
+  </footer>
+
   <div class="toasts" id="toasts" aria-live="assertive"></div>
+
+  <dialog id="aboutDialog" class="wide about" aria-labelledby="aboutTitle">
+    <form method="dialog">
+      <h2 id="aboutTitle">Calum Organ <span class="ver">v1.1</span></h2>
+      <p>A step sequencer for Calum's pipe organ: each pipe has a valve driven
+        by an ESP32 board, and the boards play together over ESP-NOW. Draw a
+        pattern and the organ plays it. Without the organ, a simulated one
+        plays it here in the browser, placed around you in a room you arrange.</p>
+
+      <h3>People</h3>
+      <ul>
+        <li>Organ and concept: <b>Calum</b></li>
+        <li>Software: <b>Miguel Angel Crozzoli</b></li>
+        <li>Built with Claude AI as a co-designing agent.</li>
+      </ul>
+
+      <h3>Sound</h3>
+      <ul>
+        <li><a href="https://supercollider.github.io/" target="_blank" rel="noopener">SuperCollider</a>
+          (scsynth, GPL-3.0-or-later), compiled to WebAssembly by
+          <a href="https://github.com/samaaron/supersonic" target="_blank" rel="noopener">SuperSonic</a>
+          (Sam Aaron; client MIT), running in your browser.</li>
+        <li>Recorded organ: a chapel organ sampled by <b>Simon Dalzell</b> (Ivy Audio),
+          from <a href="https://github.com/sgossner/VSCO-2-CE" target="_blank" rel="noopener">Versilian
+          Studios Chamber Orchestra 2: Community Edition</a>, CC0 (public domain).
+          17 notes, trimmed, looped and levelled for this app.</li>
+        <li>Pipe synthesis, the stopped-pipe model measured from those recordings,
+          and the headphone placement: SuperCollider SynthDefs in this project.</li>
+      </ul>
+
+      <h3>Hardware and tools</h3>
+      <ul>
+        <li>ESP32 boards and ESP-NOW by Espressif. Firmware built with the
+          Arduino-ESP32 core (LGPL-2.1) and ESP-IDF (Apache-2.0).</li>
+        <li>Firmware updates in the browser:
+          <a href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noopener">ESP Web Tools</a>
+          (ESPHome, Apache-2.0).</li>
+        <li>Local app: Python with pyserial (BSD).</li>
+      </ul>
+
+      <p class="muted">Source:
+        <a href="https://github.com/mCrozzoli/calum-organ" target="_blank" rel="noopener">github.com/mCrozzoli/calum-organ</a></p>
+      <menu><button value="close">Close</button></menu>
+    </form>
+  </dialog>
 
   <dialog id="textDialog">
     <form method="dialog">

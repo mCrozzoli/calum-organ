@@ -15,7 +15,8 @@
 import { createBackend } from "./backends.js";
 import { validatePattern } from "./protocol.js";
 import { OrganSound } from "./sound.js";
-import { PIPES, ROOMS, MIN_NOTE, MAX_NOTE, noteName, defaultStage, sanitizeStage, describe } from "./stage.js";
+import { SOURCES } from "./corpus.js";
+import { PIPES, ROOMS, MIN_NOTE, MAX_NOTE, noteName, isQuarterTone, defaultStage, sanitizeStage, describe } from "./stage.js";
 
 const MAX_PIPES = 8;
 const BEAT = 4;          // steps per beat group
@@ -1039,7 +1040,24 @@ function buildStage() {
     sel.setAttribute("aria-label", `Pipe ${pipeName(i)} pitch`);
     for (let n = MIN_NOTE; n <= MAX_NOTE; n++) sel.add(new Option(noteName(n), String(n)));
     sel.addEventListener("change", () => {
-      stage.pipes[i].note = parseInt(sel.value, 10);
+      // Changing the note keeps the +¼ setting.
+      const p = stage.pipes[i];
+      p.note = parseInt(sel.value, 10) + (isQuarterTone(p.note) ? 0.5 : 0);
+      sound.setPipe(i, stage);
+      renderStageTokens();
+      saveStage();
+      auditionPipe(i);
+    });
+    const quarter = document.createElement("button");
+    quarter.type = "button";
+    quarter.className = "quarter";
+    quarter.textContent = "+¼";
+    quarter.title = `Raise pipe ${pipeName(i)} by a quarter tone`;
+    quarter.setAttribute("aria-label", quarter.title);
+    quarter.addEventListener("click", () => {
+      const p = stage.pipes[i];
+      p.note = Math.floor(p.note) + (isQuarterTone(p.note) ? 0 : 0.5);
+      syncStageControls();
       sound.setPipe(i, stage);
       renderStageTokens();
       saveStage();
@@ -1054,9 +1072,29 @@ function buildStage() {
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = pipeName(i);
-    row.append(name, sel, play);
+    row.append(name, sel, quarter, play);
     pitches.appendChild(row);
   }
+
+  const sourceSel = $("sourceSelect");
+  Object.entries(SOURCES).forEach(([value, label]) => sourceSel.add(new Option(label, value)));
+  sourceSel.addEventListener("change", async () => {
+    stage.source = sourceSel.value;
+    saveStage();
+    if (!sound.active) { renderStageNote(); return; }
+    sourceSel.disabled = true;
+    soundLoading = stage.source === "recorded" && !sound.buffersLoaded;
+    renderStageNote();
+    try {
+      await sound.setSource(stage.source, stage);
+    } catch (e) {
+      toast("Couldn't switch the sound: " + (e.message || e), "err");
+    } finally {
+      soundLoading = false;
+      sourceSel.disabled = false;
+      renderStageNote();
+    }
+  });
 
   $("volumeInput").addEventListener("input", (e) => {
     stage.volume = parseFloat(e.target.value);
@@ -1090,10 +1128,15 @@ function buildStage() {
 }
 
 function syncStageControls() {
+  $("sourceSelect").value = stage.source;
   $("volumeInput").value = stage.volume;
   $("outputSelect").value = stage.output;
   $("roomSelect").value = stage.room;
-  [...$("pitches").querySelectorAll("select")].forEach((sel, i) => { sel.value = String(stage.pipes[i].note); });
+  [...$("pitches").children].forEach((row, i) => {
+    const note = stage.pipes[i].note;
+    row.querySelector("select").value = String(Math.floor(note));
+    row.querySelector(".quarter").setAttribute("aria-pressed", String(isQuarterTone(note)));
+  });
 }
 
 function renderStageTokens() {
@@ -1178,7 +1221,13 @@ async function toggleSound() {
     updateSoundGates();
     meterLoop();
   } catch (e) {
-    toast("Sound couldn't start: " + (e.message || e), "err");
+    const msg = String((e && e.message) || e);
+    logLine(`sound engine: ${msg}`, "err");
+    // Usually the engine files couldn't be downloaded: offline, or the local
+    // app was closed. Browsers remember a failed module load, hence "reload".
+    toast(/fetch|network|import|load/i.test(msg)
+      ? "Couldn't load the sound engine. Check the internet connection (or that the Organ app is still running), then reload the page."
+      : `Sound couldn't start: ${msg}`, "err");
   }
 }
 
@@ -1190,11 +1239,21 @@ function renderSoundButton() {
   b.setAttribute("aria-pressed", String(on));
 }
 
+// What each source is, in one line for the panel.
+const SOURCE_NOTES = {
+  recorded: "Recorded organ: real chapel organ notes (Simon Dalzell, VSCO 2 CE), one recording every three semitones.",
+  stopped: "Synth: a stopped pipe, its harmonics and attack measured from the recorded organ.",
+  open: "Synth: an open pipe (principal), all harmonics present.",
+};
+let soundLoading = false;
+
 function renderStageNote() {
   const note = $("stageNote");
   let text = "";
   let warn = false;
-  if (isLive()) {
+  if (soundLoading || (sound.state === "starting" && stage.source === "recorded" && !sound.buffersLoaded)) {
+    text = "Loading the recorded organ (about 0.7 MB)…";
+  } else if (isLive()) {
     text = "Connected to the real organ: the simulated sound is muted. Arrange the room here to plan where the pipes go.";
   } else if (sound.state === "error") {
     text = "The sound engine failed to start. See the log for details.";
@@ -1205,9 +1264,9 @@ function renderStageNote() {
     text = `Sound on. Your audio output adds ${sound.latencyMs} ms delay (Bluetooth?): wired headphones keep it in time.`;
     warn = true;
   } else {
-    text = stage.output === "headphones"
-      ? "Sound on: headphones mode places each pipe around you (left/right, near/far)."
-      : "Sound on: speakers mode pans pipes left/right and fades them with distance.";
+    text = `${SOURCE_NOTES[stage.source]} ` + (stage.output === "headphones"
+      ? "Headphones mode places each pipe around you (left/right, near/far)."
+      : "Speakers mode pans pipes left/right and fades them with distance.");
   }
   note.textContent = text;
   note.classList.toggle("warn", warn);
@@ -1318,6 +1377,9 @@ $("importFile").addEventListener("change", (e) => {
   if (f) importPresets(f);
 });
 $("updateFirmware").addEventListener("click", () => { moreMenu.open = false; openFirmwareDialog(); });
+const openAbout = () => { moreMenu.open = false; $("aboutDialog").showModal(); };
+$("openAbout").addEventListener("click", openAbout);
+$("openAboutFooter").addEventListener("click", openAbout);
 document.addEventListener("click", (e) => {
   if (moreMenu.open && !moreMenu.contains(e.target)) moreMenu.open = false;
 });

@@ -4,17 +4,27 @@
 // Stage coordinates: a square seen from above, x 0..1 left to right,
 // y 0..1 top to bottom. The listener stands somewhere in it, facing the top.
 
+import { SOURCES, DEFAULT_SOURCE } from "./corpus.js";
+
 export const PIPES = 8;
 export const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+// Notes are MIDI numbers in quarter-tone steps: 60 = C4, 60.5 = C4 raised
+// by a quarter tone ("C4+¼"), 61 = C#4.
 export const MIN_NOTE = 36;    // C2
-export const MAX_NOTE = 84;    // C6
+export const MAX_NOTE = 84;    // C6 (the +¼ toggle can raise it to 84.5)
+export const TOP_NOTE = MAX_NOTE + 0.5;
 // C major pentatonic from C3: sounds good whatever the pattern.
 export const DEFAULT_NOTES = [48, 50, 52, 55, 57, 60, 62, 64];
 // Side of the square, in metres.
 export const ROOMS = { small: 6, medium: 12, large: 24 };
 export const OUTPUTS = ["headphones", "speakers"];
 
-export const noteName = (midi) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
+export const isQuarterTone = (midi) => midi % 1 !== 0;
+export function noteName(midi) {
+  const semitone = Math.floor(midi);
+  const name = `${NOTE_NAMES[semitone % 12]}${Math.floor(semitone / 12) - 1}`;
+  return isQuarterTone(midi) ? `${name}+¼` : name;
+}
 export const midiToFreq = (midi) => 440 * 2 ** ((midi - 69) / 12);
 
 export function defaultStage() {
@@ -29,6 +39,7 @@ export function defaultStage() {
     room: "medium",
     output: "headphones",
     volume: 0.7,
+    source: DEFAULT_SOURCE,
   };
 }
 
@@ -60,7 +71,8 @@ export function sanitizeStage(raw) {
   const pipes = d.pipes.map((p, i) => {
     const r = Array.isArray(raw.pipes) ? raw.pipes[i] : null;
     if (!r || typeof r !== "object") return p;
-    const note = Number.isInteger(r.note) ? clamp(r.note, MIN_NOTE, MAX_NOTE) : p.note;
+    // Any number is snapped to the nearest quarter tone and kept in range.
+    const note = Number.isFinite(r.note) ? clamp(Math.round(r.note * 2) / 2, MIN_NOTE, TOP_NOTE) : p.note;
     return { x: unit(r.x, p.x), y: unit(r.y, p.y), note };
   });
   const l = raw.listener && typeof raw.listener === "object" ? raw.listener : {};
@@ -70,6 +82,7 @@ export function sanitizeStage(raw) {
     room: typeof raw.room === "string" && Object.hasOwn(ROOMS, raw.room) ? raw.room : d.room,
     output: OUTPUTS.includes(raw.output) ? raw.output : d.output,
     volume: Number.isFinite(raw.volume) ? clamp(raw.volume, 0, 1) : d.volume,
+    source: typeof raw.source === "string" && Object.hasOwn(SOURCES, raw.source) ? raw.source : d.source,
   };
 }
 

@@ -24,7 +24,7 @@ packages = ["app", "app.static", "sim"]
 
 [tool.setuptools.package-data]
 "app.static" = [
-    "*.html", "*.css", "js/*.js", "firmware/*/*", "synthdefs/*",
+    "*.html", "*.css", "js/*.js", "firmware/*/*", "synthdefs/*", "corpus/*",
     "vendor/*.md", "vendor/supersonic/*", "vendor/supersonic/workers/*",
     "vendor/supersonic-core/*", "vendor/supersonic-core/wasm/*", "vendor/supersonic-core/workers/*",
 ]

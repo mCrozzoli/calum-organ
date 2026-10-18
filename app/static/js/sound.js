@@ -3,19 +3,30 @@
 // sound/organ_synthdefs.scd. Same setup as the Dark Sonification web designs:
 // postMessage transport, so it works on GitHub Pages without special headers.
 //
-// One persistent organPipe synth per pipe; its `gate` is the valve, so
-// consecutive open steps sustain without re-attacking, as a real pipe would.
+// Three sources (corpus.js): the recorded organ (organSample playing
+// corpus/*.ogg), or the synth (organPipe) as a stopped pipe modelled on that
+// recording or as an open pipe. One persistent synth per pipe; its `gate` is
+// the valve, so consecutive open steps sustain without re-attacking, as a
+// real pipe would.
 //
-//   organPipe x 8 (head group) -> bus 16-17 dry, 18-19 reverb
+//   8 pipe synths (head group) -> bus 16-17 dry, 18-19 reverb
 //   organMaster (tail group)   -> reverb, volume, limiter -> out 0-1
 
 import { PIPES, ROOMS, midiToFreq, placement } from "./stage.js";
+import { DEFAULT_SOURCE, samplePlan, synthPlan } from "./corpus.js";
 
 const DRY_BUS = 16;      // no bus allocator in the browser; 16+ is private
 const REV_BUS = 18;
 const AUDITION_MS = 450;
 // Reverb per room size: FreeVerb room size, and how much each pipe sends.
 const ROOM_REVERB = { small: [0.35, 0.15], medium: [0.6, 0.25], large: [0.85, 0.4] };
+// Per source: SynthDef, level (matched offline: within 0.5 dB of each
+// other), and reverb share (the recordings already carry their chapel).
+const KINDS = {
+  recorded: { def: "organSample", amp: 0.5, reverb: 0.5 },
+  stopped: { def: "organPipe", amp: 0.2, reverb: 1 },
+  open: { def: "organPipe", amp: 0.2, reverb: 1 },
+};
 
 export class OrganSound {
   constructor({ onLog = () => {}, onState = () => {} } = {}) {
@@ -23,12 +34,16 @@ export class OrganSound {
     this.onState = onState;
     this.sonic = null;
     this.state = "off";            // off | starting | on | error
+    this.source = null;            // the source the pipe synths are playing
+    this.corpus = null;
+    this.buffersLoaded = false;
     this.pipeIds = [];
     this.wanted = new Array(PIPES).fill(false);    // what the sequencer asks for
     this.auditioning = new Array(PIPES).fill(0);   // timer ids
     this.sent = new Array(PIPES).fill(false);      // last gate sent
     this.meter = null;
     this.latencyMs = 0;
+    this.root = new URL("../", import.meta.url).href;     // app/static/
   }
 
   get active() { return this.state === "on"; }
@@ -47,11 +62,15 @@ export class OrganSound {
         // The audio thread was reclaimed (e.g. long in the background): rebuild.
         await this.sonic.destroy().catch(() => {});
         this.sonic = null;
+        this.source = null;
+        this.buffersLoaded = false;
       }
       if (!this.sonic) await this._boot();
+      await this._useSource(stage.source || DEFAULT_SOURCE);
       this.applyStage(stage);
       this.latencyMs = Math.round((this.sonic.audioContext?.outputLatency || 0) * 1000);
       this._setState("on");
+      this._sync();
     } catch (e) {
       this._setState("error", { message: e.message || String(e) });
       throw e;
@@ -59,7 +78,7 @@ export class OrganSound {
   }
 
   async _boot() {
-    const root = new URL("../", import.meta.url).href;     // app/static/
+    const root = this.root;
     const { SuperSonic } = await import(`${root}vendor/supersonic/supersonic.js`);
     const sonic = new SuperSonic({
       baseURL: `${root}vendor/supersonic/`,
@@ -72,30 +91,67 @@ export class OrganSound {
     sonic.on("in", (msg) => { if (msg[0] === "/fail") this.onLog(`scsynth: ${msg.slice(1).join(" ")}`, "err"); });
     sonic.on("error", (e) => this.onLog(`sound engine: ${e.message || e}`, "err"));
 
+    const corpus = fetch(`${root}corpus/corpus.json`).then((r) => {
+      if (!r.ok) throw new Error(`corpus.json: HTTP ${r.status}`);
+      return r.json();
+    });
     await sonic.init();
-    for (const def of ["organPipe", "organMaster"]) {
+    for (const def of ["organPipe", "organSample", "organMaster"]) {
       await sonic.loadSynthDef(`${root}synthdefs/${def}.scsyndef`);
     }
     await sonic.sync();
+    this.corpus = await corpus;
 
-    const voices = sonic.nextNodeId();
+    this.voices = sonic.nextNodeId();
     const fx = sonic.nextNodeId();
-    sonic.send("/g_new", voices, 0, 0);        // head: pipes
+    sonic.send("/g_new", this.voices, 0, 0);   // head: pipes
     sonic.send("/g_new", fx, 1, 0);            // tail: master runs last
     this.masterId = sonic.nextNodeId();
     sonic.send("/s_new", "organMaster", this.masterId, 0, fx,
                "in", DRY_BUS, "revIn", REV_BUS, "out", 0);
-    this.pipeIds = [];
-    for (let i = 0; i < PIPES; i++) {
-      const id = sonic.nextNodeId();
-      this.pipeIds.push(id);
-      sonic.send("/s_new", "organPipe", id, 1, voices,
-                 "out", DRY_BUS, "revOut", REV_BUS, "gate", 0);
-    }
     await sonic.sync();
     this.sonic = sonic;
-    this.sent.fill(false);
     this._setupMeter();
+  }
+
+  // Make the pipe synths play `source`, loading the recordings the first time.
+  async _useSource(source) {
+    if (!KINDS[source]) source = DEFAULT_SOURCE;
+    if (source === "recorded" && !this.buffersLoaded) {
+      // One at a time: loading all 17 in parallel races SuperSonic's buffer
+      // pool growth and runs out of memory (seen in Chrome, 0.71.0).
+      for (const [i, s] of this.corpus.samples.entries()) {
+        await this.sonic.loadSample(i, `${this.root}corpus/${s.file}`);
+      }
+      await this.sonic.sync();
+      this.buffersLoaded = true;
+    }
+    const def = KINDS[source].def;
+    if (this.source && KINDS[this.source].def === def) {
+      this.source = source;          // same synth, different settings
+      return;
+    }
+    // Swap synths: let the old valves close (release), then free them.
+    const old = this.pipeIds;
+    for (const id of old) this.sonic.send("/n_set", id, "gate", 0);
+    if (old.length) setTimeout(() => this.sonic.send("/n_free", ...old), 250);
+    this.pipeIds = [];
+    for (let i = 0; i < PIPES; i++) {
+      const id = this.sonic.nextNodeId();
+      this.pipeIds.push(id);
+      this.sonic.send("/s_new", def, id, 1, this.voices,
+                      "out", DRY_BUS, "revOut", REV_BUS, "gate", 0);
+    }
+    this.sent.fill(false);
+    this.source = source;
+  }
+
+  // Switch source while sound is on (re-opens the pipes the sequencer holds).
+  async setSource(source, stage) {
+    if (!this.sonic || this.state !== "on") return;
+    await this._useSource(source);
+    this.applyStage(stage);
+    this._sync();
   }
 
   // Left/right level meter: shows the stereo placement (and lets tests
@@ -161,6 +217,7 @@ export class OrganSound {
   }
 
   _sync(only) {
+    if (this.state !== "on") return;
     const list = only === undefined ? [...Array(PIPES).keys()] : [only];
     for (const i of list) {
       const open = this.wanted[i] || this.auditioning[i] !== 0;
@@ -170,26 +227,37 @@ export class OrganSound {
 
   _send(i, open) {
     this.sent[i] = open;
-    if (this.sonic && this.state !== "error") this.sonic.send("/n_set", this.pipeIds[i], "gate", open ? 1 : 0);
+    if (this.sonic) this.sonic.send("/n_set", this.pipeIds[i], "gate", open ? 1 : 0);
   }
 
   // Position, pitch, output mode, room and volume, all at once.
   applyStage(stage) {
-    if (!this.sonic) return;
-    for (let i = 0; i < PIPES; i++) this.setPipe(i, stage);
+    if (!this.sonic || !this.source) return;
+    const kind = KINDS[this.source];
     const [roomSize, send] = ROOM_REVERB[stage.room] || ROOM_REVERB.medium;
-    for (const id of this.pipeIds) {
-      this.sonic.send("/n_set", id, "binaural", stage.output === "speakers" ? 0 : 1, "reverb", send);
+    for (let i = 0; i < PIPES; i++) {
+      this.setPipe(i, stage);
+      this.sonic.send("/n_set", this.pipeIds[i], "binaural", stage.output === "speakers" ? 0 : 1,
+                      "reverb", send * kind.reverb, "amp", kind.amp);
     }
     this.sonic.send("/n_set", this.masterId, "amp", stage.volume, "room", roomSize);
   }
 
   setPipe(i, stage) {
-    if (!this.sonic) return;
+    if (!this.sonic || !this.source) return;
     const pipe = stage.pipes[i];
+    const id = this.pipeIds[i];
     const { azimuth, distance } = placement(pipe, stage.listener, ROOMS[stage.room] || ROOMS.medium);
-    this.sonic.send("/n_set", this.pipeIds[i], "freq", midiToFreq(pipe.note),
-                    "azimuth", azimuth, "distance", distance);
+    this.sonic.send("/n_set", id, "azimuth", azimuth, "distance", distance);
+    if (this.source === "recorded") {
+      const p = samplePlan(this.corpus, pipe.note);
+      this.sonic.send("/n_set", id, "buf", p.buf, "rate", p.rate,
+                      "loopStart", p.loopStart, "loopEnd", p.loopEnd);
+    } else {
+      const p = synthPlan(this.source, this.corpus, pipe.note);
+      this.sonic.send("/n_set", id, "freq", midiToFreq(pipe.note), "attack", p.attack);
+      this.sonic.send("/n_setn", id, "harm", p.harm.length, ...p.harm);
+    }
   }
 
   setVolume(v) {

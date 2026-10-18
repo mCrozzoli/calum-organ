@@ -58,22 +58,28 @@ def read(path: Path):
 
 
 PIPE = read(DEFS / "organPipe.scsyndef")["organPipe"]
+SAMPLE = read(DEFS / "organSample.scsyndef")["organSample"]
 MASTER = read(DEFS / "organMaster.scsyndef")["organMaster"]
 
 
 def test_controls_match_the_engine_code():
     # every "name", value pair sent with /s_new or /n_set in sound.js
-    sent = set(re.findall(r'"(out|revOut|in|revIn|freq|gate|amp|azimuth|distance|binaural|reverb|room)"', SOUND_JS))
+    # every "name" sent with /s_new, /n_set or /n_setn in sound.js
+    sent = set(re.findall(r'"(out|revOut|in|revIn|freq|gate|amp|azimuth|distance|binaural|reverb|room|'
+                          r'attack|harm|buf|rate|loopStart|loopEnd)"', SOUND_JS))
     assert sent, "found no controls in sound.js"
-    known = set(PIPE[0]) | set(MASTER[0])
+    known = set(PIPE[0]) | set(SAMPLE[0]) | set(MASTER[0])
     assert sent <= known, f"sound.js sends controls the SynthDefs don't have: {sent - known}"
-    assert {"gate", "freq", "azimuth", "distance", "binaural"} <= set(PIPE[0])
+    shared = {"gate", "amp", "azimuth", "distance", "binaural", "reverb", "out", "revOut"}
+    assert shared <= set(PIPE[0]) and shared <= set(SAMPLE[0]), "both pipe kinds take the same placement"
+    assert {"freq", "attack", "harm"} <= set(PIPE[0])
+    assert {"buf", "rate", "loopStart", "loopEnd"} <= set(SAMPLE[0])
 
 
 def test_only_ugens_the_browser_engine_has():
     wasm = WASM.read_bytes()
     pseudo = {"Control", "BinaryOpUGen", "UnaryOpUGen", "MulAdd", "Sum3", "Sum4"}
-    for ugen in (PIPE[1] | MASTER[1]) - pseudo:
+    for ugen in (PIPE[1] | SAMPLE[1] | MASTER[1]) - pseudo:
         # Names are stored NUL-terminated, sometimes as the tail of a longer
         # name (the linker merges "SinOsc" into "FSinOsc"), so match the end.
         assert re.search(re.escape(ugen.encode()) + b"\x00", wasm), f"{ugen} not in scsynth-nrt.wasm"

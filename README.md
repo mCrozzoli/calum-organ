@@ -105,11 +105,19 @@ pipes, so you can hear a pattern before the hardware is there.
 
 - **🔊 Sound on** starts the sound engine (browsers only allow audio after a
   click). Best with headphones.
+- **Sound** chooses what the pipes sound like:
+  - **Recorded organ:** real notes of a chapel organ (a stopped flute stop),
+    one recording every three semitones, so no pipe is shifted by more than
+    1.5 semitones. Held notes loop seamlessly.
+  - **Synth: stopped pipe:** SuperCollider synthesis using the harmonics and
+    attack times measured from that recorded organ.
+  - **Synth: open pipe:** SuperCollider synthesis of an open principal pipe.
 - **The room:** a square seen from above, with you (🎧) facing the top. Drag
   the pipes, and yourself, around it; rings are every 2 m. Click a pipe to
   hear it. With the pipe focused, arrow keys move it.
-- **Pitch:** choose each pipe's note (C2–C6). Set them to the real pipes'
-  notes and the simulation sounds like the installation.
+- **Pitch:** choose each pipe's note (C2–C6); **+¼** raises it by a quarter
+  tone. Set them to the real pipes' notes and the simulation sounds like the
+  installation.
 - **🎧 Headphones (3D)** places each pipe around you: the far ear hears it
   slightly later and duller, far pipes are quieter and more reverberant.
   Left/right and near/far are clear; front/back is only a hint (that needs a
@@ -127,23 +135,36 @@ compiles `scsynth` to WebAssembly (same setup and pinned version as the Dark
 Sonification web designs; the `postMessage` transport needs no special
 headers, so GitHub Pages works). The synthesis is ordinary SuperCollider:
 
-- `sound/organ_synthdefs.scd`: `organPipe` (flue-pipe tone, breath noise,
-  attack chiff; the valve is its `gate`; binaural or stereo placement) and
-  `organMaster` (reverb, volume, limiter).
-- `app/static/js/sound.js`: boots the engine and sends OSC (`/s_new`,
-  `/n_set`), one persistent synth per pipe.
+- `sound/organ_synthdefs.scd`: `organPipe` (flue-pipe harmonics, breath
+  noise, attack chiff), `organSample` (plays a recorded note, then cycles its
+  steady part while the valve stays open), both placed by the same binaural
+  or stereo code, and `organMaster` (reverb, volume, limiter).
+- `app/static/js/sound.js`: boots the engine, loads the recordings into
+  buffers, and sends OSC (`/s_new`, `/n_set`), one persistent synth per pipe.
+- `app/static/corpus/`: the recorded organ, built by
+  `tools/build_corpus.py` from the VSCO 2 CE files (see its README).
 
-After changing the SynthDefs, rebuild and check them (needs SuperCollider):
+After changing the SynthDefs, rebuild and check them (needs SuperCollider
+and ffmpeg):
 
 ```bash
 /Applications/SuperCollider.app/Contents/MacOS/sclang tools/build_synthdefs.scd
-/Applications/SuperCollider.app/Contents/MacOS/sclang tools/check_synthdefs.scd /tmp/organ_check.wav
+ffmpeg -i app/static/corpus/organ-C3.ogg -ar 48000 -c:a pcm_f32le /tmp/organ-C3.wav
+/Applications/SuperCollider.app/Contents/MacOS/sclang tools/check_synthdefs.scd /tmp/organ_check.wav /tmp/organ-C3.wav
 python3 tools/check_synthdefs.py /tmp/organ_check.wav
 ```
 
-The check renders one pipe in several places offline and measures the result:
-louder and earlier in the near ear, quieter when far, silent with the valve
-closed.
+The check renders pipes offline and measures them: louder and earlier in
+the near ear, quieter when far, silent with the valve closed, a held
+recorded note looping without clicks or dips, and the synth and the
+recording at the same loudness.
+
+To rebuild the recorded organ, download `Keys/Organ/Quiet/NT5_Man3Quiet_122…170_rr1.wav`
+from <https://github.com/sgossner/VSCO-2-CE> into a folder, then:
+
+```bash
+python3 tools/build_corpus.py <that folder>
+```
 
 ## Updating board firmware
 
@@ -241,6 +262,8 @@ calum-organ/
 │       ├── js/demo.js      # simulated organ
 │       ├── js/sound.js     # SuperCollider (SuperSonic) sound engine
 │       ├── js/stage.js     # listening stage: positions, pitches
+│       ├── js/corpus.js    # sound sources: which recording / spectrum
+│       ├── corpus/         # recorded organ (VSCO 2 CE, CC0), see its README
 │       ├── synthdefs/      # compiled .scsyndef (built from sound/)
 │       ├── vendor/         # SuperSonic 0.71.0 (see vendor/README.md)
 │       └── firmware/       # binaries for the web updater
@@ -251,6 +274,7 @@ calum-organ/
 ├── tools/
 │   ├── build_firmware.sh   # rebuild app/static/firmware/
 │   ├── build_synthdefs.scd # rebuild app/static/synthdefs/
+│   ├── build_corpus.py     # rebuild app/static/corpus/ from VSCO 2 CE
 │   ├── check_synthdefs.*   # render offline + measure placement
 │   └── get_mac/            # prints a board's MAC address
 ├── sim/fake_esp.py         # USB stand-in for the sender (local app)
@@ -271,11 +295,23 @@ calum-organ/
   Quit button, receivers ride through lost beats. Online version on GitHub
   Pages (Web Serial, demo organ, firmware updates from the browser).
   Light/dark theme. Simulated pipe sound in SuperCollider (SuperSonic),
-  with a draggable listening stage, per-pipe pitch and headphone 3D.
+  with a draggable listening stage, per-pipe pitch (quarter tones too) and
+  headphone 3D. Recorded-organ sound source (VSCO 2 CE), synth voices
+  modelled on it, and an About & credits panel.
 
-## Licences
+## Credits and licences
 
-`app/static/vendor/` holds SuperSonic 0.71.0: the client is MIT, the
-`scsynth` engine (`supersonic-core`) is GPL-3.0-or-later; their licence
-files are next to them. Later SuperSonic versions are AGPL-3.0, which is why
-it's pinned. This project's own code has no licence file yet.
+The app's **About & credits** panel (More ▾, or the page footer) lists
+everyone: Calum (organ and concept), Miguel Angel Crozzoli (software), built
+with Claude AI as a co-designing agent, and the projects below.
+
+- `app/static/vendor/`: SuperSonic 0.71.0 (Sam Aaron). The client is MIT,
+  the `scsynth` engine (`supersonic-core`) is GPL-3.0-or-later; their licence
+  files are next to them. Later SuperSonic versions are AGPL-3.0, which is
+  why it's pinned.
+- `app/static/corpus/`: organ recorded by Simon Dalzell (Ivy Audio) for
+  Versilian Studios Chamber Orchestra 2: Community Edition, CC0.
+- Firmware: Arduino-ESP32 core (LGPL-2.1), ESP-IDF (Apache-2.0). Web
+  updater: ESP Web Tools (Apache-2.0).
+
+This project's own code has no licence file yet.
