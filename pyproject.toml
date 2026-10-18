@@ -1,0 +1,29 @@
+[project]
+name = "calum-organ"
+version = "1.1.0"
+description = "Calum Pipe Madness — browser-based step sequencer for ESP-NOW pipe organ"
+requires-python = ">=3.9"
+dependencies = [
+    "pyserial>=3.5,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+calum-organ = "app.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app", "app.static", "sim"]
+
+[tool.setuptools.package-data]
+"app.static" = ["*.html", "*.css", "js/*.js", "firmware/*/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

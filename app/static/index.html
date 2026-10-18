@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calum Organ</title>
+  <meta name="description" content="Step sequencer for Calum's ESP32 pipe organ. Connects to the boards over USB from Chrome or Edge.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='10' width='5' height='18' rx='2' fill='%23f2a93b'/%3E%3Crect x='13.5' y='4' width='5' height='24' rx='2' fill='%23f2a93b'/%3E%3Crect x='23' y='14' width='5' height='14' rx='2' fill='%23f2a93b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Calum Organ <span class="ver">v1.1 · <span id="modeName">…</span></span></div>
+
+    <div class="group conn">
+      <select id="portSelect" aria-label="Serial port"></select>
+      <button id="refreshPorts" title="Refresh port list" aria-label="Refresh port list">↻</button>
+      <button id="connectBtn" class="primary">Connect</button>
+    </div>
+
+    <div class="group transport">
+      <button id="playBtn" class="accent" aria-pressed="false">▶ Play</button>
+      <button id="clearBtn">Clear</button>
+    </div>
+
+    <div class="group settings">
+      <label for="rowsInput">Pipes</label>
+      <input id="rowsInput" type="number" min="1" max="8" value="4" inputmode="numeric">
+      <label for="colsInput">Steps</label>
+      <input id="colsInput" type="number" min="1" max="32" value="16" inputmode="numeric">
+      <label for="tempoInput">Tempo</label>
+      <input id="tempoInput" type="number" min="20" max="300" value="120" inputmode="numeric">
+      <span class="unit" title="Steps per minute">steps/min</span>
+    </div>
+
+    <div class="group presets">
+      <select id="presetSelect" aria-label="Preset"></select>
+      <button id="savePreset" title="Save the current pattern">Save…</button>
+      <button id="deletePreset" title="Delete the selected preset" disabled>Delete</button>
+    </div>
+
+    <div class="group end">
+      <details class="menu" id="moreMenu">
+        <summary>More ▾</summary>
+        <div class="menu-items" role="menu">
+          <button id="exportPresets" role="menuitem">Export presets…</button>
+          <button id="importPresets" role="menuitem">Import presets…</button>
+          <button id="updateFirmware" role="menuitem">Update board firmware…</button>
+        </div>
+      </details>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+      <button id="quitBtn" class="quit" title="Stop the organ and close the app" hidden>Quit</button>
+    </div>
+  </header>
+
+  <div class="banner" id="usbWarning" hidden>
+    This browser can't talk to USB devices, so it can't drive the organ.
+    Open this page in <b>Chrome</b> or <b>Edge</b> on a computer. The demo organ works here.
+  </div>
+
+  <!-- What the screen is showing: the organ, a demo, or a local preview. -->
+  <div class="truth" id="truthBar" role="status" aria-live="polite">
+    <span class="mode" id="modeBadge">PREVIEW</span>
+    <span id="truthText">Not connected. The playhead is a preview, the organ is not playing.</span>
+    <span class="sync" id="syncText"></span>
+  </div>
+
+  <main>
+    <section class="grid-wrap" id="gridWrap">
+      <canvas id="grid" aria-label="Pattern grid: rows are pipes, columns are steps"></canvas>
+      <p class="hint">Click or drag to paint · drag from a lit cell to erase · Space = play/stop · C = clear</p>
+    </section>
+
+    <section class="peers" id="peers" aria-label="Pipes"></section>
+
+    <details class="log-wrap" id="logWrap">
+      <summary>
+        <span>Log</span>
+        <span class="log-count" id="logCount"></span>
+        <label class="autoscroll" onclick="event.stopPropagation()">
+          <input type="checkbox" id="autoScroll" checked> autoscroll
+        </label>
+      </summary>
+      <div id="log" class="log"></div>
+    </details>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="assertive"></div>
+
+  <dialog id="textDialog">
+    <form method="dialog">
+      <label id="textDialogLabel" for="textDialogInput"></label>
+      <input id="textDialogInput" autocomplete="off">
+      <p class="dialog-error" id="textDialogError"></p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="accent" id="textDialogOk">OK</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog">
+    <form method="dialog">
+      <p class="confirm-title" id="confirmTitle"></p>
+      <p class="confirm-body" id="confirmBody"></p>
+      <menu>
+        <button value="cancel" id="confirmCancel">Cancel</button>
+        <button value="ok" id="confirmOk" class="accent">OK</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="firmwareDialog" class="wide">
+    <form method="dialog">
+      <p class="confirm-title">Update board firmware</p>
+      <p class="confirm-body">
+        Installs Calum Organ v1.1 on an ESP32 over USB. Update the sender
+        <b>and every pipe</b>: boards on different versions don't understand
+        each other. If a board isn't found, hold its BOOT button while
+        clicking Connect.
+      </p>
+      <div id="firmwareButtons"><p class="confirm-body">Loading the updater…</p></div>
+      <menu><button value="close">Done</button></menu>
+    </form>
+  </dialog>
+
+  <!-- Shown after Quit: the app (server) is gone. -->
+  <div class="closed-screen" id="closedScreen" hidden>
+    <div>
+      <h1>Calum Organ has quit</h1>
+      <p>The organ was stopped. You can close this tab.</p>
+      <p class="muted">To start again, double-click <b>Organ.command</b>.</p>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
