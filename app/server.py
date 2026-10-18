@@ -39,6 +39,9 @@ from .ports import list_serial_ports
 from .serial_link import LinkConfig, SerialLink
 
 STATIC_DIR = Path(__file__).parent / "static"
+# Older Pythons don't know these; the sound engine needs the right types.
+mimetypes.add_type("application/wasm", ".wasm")
+mimetypes.add_type("text/javascript", ".js")
 PRESET_NAME_RE = re.compile(r"^[\w][\w \-.]{0,63}$")
 
 

@@ -23,6 +23,7 @@ says which one you're in.
 | Needs | internet to open the page | Python 3 (set up automatically) |
 | Presets | stored in that browser (export/import to move them) | files in `~/.calum_organ/presets/` |
 | Extras | demo organ, update board firmware | Quit button |
+| Both | simulated sound (SuperCollider in the browser), light/dark theme | |
 
 ```
  Online:      Browser ── Web Serial (USB) ──▶ ESP32 sender ── ESP-NOW ──▶ 8× receiver ──▶ pipes
@@ -96,6 +97,53 @@ start of the next bar so the rhythm doesn't stumble.
 - If the sender reboots, the app notices and resends the pattern.
 - Reloading the page or opening a second tab shows what the organ is
   playing; it never overwrites it with a blank grid.
+
+## Listening without the organ
+
+The **Listen** panel plays the demo organ (and the preview) as simulated
+pipes, so you can hear a pattern before the hardware is there.
+
+- **🔊 Sound on** starts the sound engine (browsers only allow audio after a
+  click). Best with headphones.
+- **The room:** a square seen from above, with you (🎧) facing the top. Drag
+  the pipes, and yourself, around it; rings are every 2 m. Click a pipe to
+  hear it. With the pipe focused, arrow keys move it.
+- **Pitch:** choose each pipe's note (C2–C6). Set them to the real pipes'
+  notes and the simulation sounds like the installation.
+- **🎧 Headphones (3D)** places each pipe around you: the far ear hears it
+  slightly later and duller, far pipes are quieter and more reverberant.
+  Left/right and near/far are clear; front/back is only a hint (that needs a
+  measured head model). **🔈 Speakers** pans left/right only.
+- **Room size** sets how far apart things are, and the reverb.
+- The **L/R meter** shows what's coming out of each side.
+
+With the real organ connected the simulated sound mutes itself: you're
+hearing the real pipes. The layout and pitches are saved in the browser.
+
+### How the sound is made
+
+SuperCollider, running in the browser: [SuperSonic](https://github.com/samaaron/supersonic)
+compiles `scsynth` to WebAssembly (same setup and pinned version as the Dark
+Sonification web designs; the `postMessage` transport needs no special
+headers, so GitHub Pages works). The synthesis is ordinary SuperCollider:
+
+- `sound/organ_synthdefs.scd`: `organPipe` (flue-pipe tone, breath noise,
+  attack chiff; the valve is its `gate`; binaural or stereo placement) and
+  `organMaster` (reverb, volume, limiter).
+- `app/static/js/sound.js`: boots the engine and sends OSC (`/s_new`,
+  `/n_set`), one persistent synth per pipe.
+
+After changing the SynthDefs, rebuild and check them (needs SuperCollider):
+
+```bash
+/Applications/SuperCollider.app/Contents/MacOS/sclang tools/build_synthdefs.scd
+/Applications/SuperCollider.app/Contents/MacOS/sclang tools/check_synthdefs.scd /tmp/organ_check.wav
+python3 tools/check_synthdefs.py /tmp/organ_check.wav
+```
+
+The check renders one pipe in several places offline and measures the result:
+louder and earlier in the near ear, quieter when far, silent with the valve
+closed.
 
 ## Updating board firmware
 
@@ -191,12 +239,19 @@ calum-organ/
 │       ├── js/link.js      # serial link + Web Serial transport
 │       ├── js/protocol.js  # same protocol as app/protocol.py
 │       ├── js/demo.js      # simulated organ
+│       ├── js/sound.js     # SuperCollider (SuperSonic) sound engine
+│       ├── js/stage.js     # listening stage: positions, pitches
+│       ├── synthdefs/      # compiled .scsyndef (built from sound/)
+│       ├── vendor/         # SuperSonic 0.71.0 (see vendor/README.md)
 │       └── firmware/       # binaries for the web updater
 ├── firmware/
 │   ├── calum_sender/       # USB board: parser + master clock
 │   └── calum_receiver/     # pipe boards: follow ticks, drive relay
+├── sound/organ_synthdefs.scd  # the simulated pipes, in SuperCollider
 ├── tools/
 │   ├── build_firmware.sh   # rebuild app/static/firmware/
+│   ├── build_synthdefs.scd # rebuild app/static/synthdefs/
+│   ├── check_synthdefs.*   # render offline + measure placement
 │   └── get_mac/            # prints a board's MAC address
 ├── sim/fake_esp.py         # USB stand-in for the sender (local app)
 ├── tests/                  # pytest + tests/js (node --test)
@@ -215,3 +270,12 @@ calum-organ/
   touch support, reworked UI, preset delete + unsaved-changes warning,
   Quit button, receivers ride through lost beats. Online version on GitHub
   Pages (Web Serial, demo organ, firmware updates from the browser).
+  Light/dark theme. Simulated pipe sound in SuperCollider (SuperSonic),
+  with a draggable listening stage, per-pipe pitch and headphone 3D.
+
+## Licences
+
+`app/static/vendor/` holds SuperSonic 0.71.0: the client is MIT, the
+`scsynth` engine (`supersonic-core`) is GPL-3.0-or-later; their licence
+files are next to them. Later SuperSonic versions are AGPL-3.0, which is why
+it's pinned. This project's own code has no licence file yet.

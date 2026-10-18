@@ -1,0 +1,169 @@
+SuperSonic - Audio Synthesis Engine
+Copyright (c) 2025 Sam Aaron
+
+This project is dual-licensed depending on the component:
+
+================================================================================
+Client Libraries (MIT OR GPL-3.0-or-later)
+================================================================================
+
+The following client API files are dual-licensed under your choice of MIT or
+GPL-3.0-or-later. These communicate with the engine exclusively via serialised
+Open Sound Control (OSC) messages and contain no GPL-derived code.
+
+  JavaScript client:
+    js/supersonic.js
+    js/lib/
+    js/workers/debug_worker.js
+    js/workers/osc_in_worker.js
+    js/workers/osc_out_log_sab_worker.js
+    js/workers/osc_out_prescheduler_worker.js
+
+  Erlang/BEAM client:
+    src/nif/supersonic.erl
+
+  Rust client / subsystem:
+    rust/supersonic-midi/         (MIDI subsystem; midir-based, no GPL-derived
+                                   code; exchanges /midi/* OSC with the engine.
+                                   When statically linked into the GPL native
+                                   engine the combined binary is GPL, but this
+                                   crate itself is available under MIT OR
+                                   GPL-3.0-or-later — e.g. for the web build.)
+
+  Reference hosts:
+    test/freestanding/freestanding_main.cpp   (desktop build/boot guard)
+    esp32s3/main/main.cpp                      (ESP32-S3 build-smoke)
+                                  (minimal engine drivers that use only the
+                                   lanes C ABI (src/lanes/lanes.h) and contain no
+                                   GPL-derived code, so each file is available
+                                   under MIT OR GPL-3.0-or-later as a reusable
+                                   integration template. As with the Rust client,
+                                   a binary that statically links the GPL engine
+                                   is GPL.)
+
+================================================================================
+Audio Engine (GPL-3.0-or-later)
+================================================================================
+
+The following components are licensed under GPL-3.0-or-later only:
+
+  src/                                  (C++ audio engine — shared across all
+                                         build targets: WASM, native, NIF)
+  src/native/                           (Native JUCE host wrapper)
+  js/workers/scsynth_audio_worklet.js   (AudioWorklet that executes WASM)
+
+The engine compiles to three targets:
+  - WebAssembly (AudioWorklet)          — for browsers
+  - Native executable (JUCE)            — for desktop use and Sonic Pi
+  - NIF shared library (BEAM)           — for Erlang/Elixir applications
+
+All three targets link the same GPL-licensed engine code derived from
+SuperCollider's scsynth.
+
+Based on SuperCollider's scsynth
+Copyright (c) 2002-2023 James McCartney and SuperCollider contributors
+
+================================================================================
+Third-Party Components
+================================================================================
+
+- [Steinberg ASIO SDK 2.3.4](https://www.steinberg.net/en/company/developers.html) —
+  [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html)
+  Bundled in external_libs/ASIOSDK2.3.4/. Compiled into the native
+  build on Windows only (JUCE_ASIO=1). Dual-licensed; SuperSonic uses
+  it under GPL-3.0. "ASIO" is a trademark of Steinberg Media
+  Technologies GmbH.
+
+================================================================================
+MIT License
+================================================================================
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+GNU General Public License v3.0 or later
+================================================================================
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+
+================================================================================
+Downstream Usage — Architectural Intent
+================================================================================
+
+The following is a statement of architectural intent from the project author.
+It is provided for clarification and guidance only and does not modify,
+supersede, or reinterpret the terms of the GPL.
+
+SuperSonic is deliberately designed with a strict execution boundary between
+the GPL-licensed audio engine and application-level code. All communication
+crosses this boundary via serialised OSC messages — a language-neutral,
+protocol-level messaging system comparable to network or IPC-based
+communication between independent software components.
+
+The boundary is enforced by architecture on each platform:
+
+  - Web (WASM): The engine runs inside an AudioWorklet, providing strong
+    execution isolation. Code outside the AudioWorklet cannot directly access
+    engine internals, shared closures, object references, or function calls.
+    The MIT-licensed JavaScript client communicates exclusively via
+    postMessage or shared-memory transport used only for serialised OSC
+    message exchange.
+
+  - Native (JUCE): The engine runs as a standalone process or within a host
+    application. External code communicates via UDP OSC messages over a
+    network socket — a clear process boundary.
+
+  - NIF (BEAM): The engine is loaded as a NIF shared library. The
+    MIT-licensed Erlang module (src/nif/supersonic.erl) exposes five
+    functions: start, stop, send_osc, set_notification_pid, and
+    clear_notification_pid. All data crossing the NIF boundary consists of
+    raw OSC binary blobs and Erlang messages — no engine types, data
+    structures, or callbacks leak into the Erlang API. This is functionally
+    equivalent to communication over a network socket.
+
+It is the project author's good-faith interpretation that application code
+which uses the MIT-licensed client libraries solely to send and receive OSC
+messages with the engine would generally not constitute a derivative work of
+the GPL-licensed audio engine, provided that:
+
+  1. The GPL-licensed components are not modified. Any modifications to these
+     components remain subject to the GPL.
+
+  2. Application code interacts with the engine exclusively through the
+     documented OSC message interface via the MIT-licensed client libraries.
+
+  3. Distribution of the GPL-licensed engine components remains compliant
+     with the GPL, including providing access to corresponding source code
+     when required.
+
+This interpretation is consistent with long-established architectural
+separation patterns in audio software ecosystems. For example, in the
+SuperCollider ecosystem, client environments such as sclang and third-party
+applications communicate with the scsynth synthesis engine over OSC without
+generally being considered derivative works of the engine itself.

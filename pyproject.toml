@@ -23,7 +23,11 @@ build-backend = "setuptools.build_meta"
 packages = ["app", "app.static", "sim"]
 
 [tool.setuptools.package-data]
-"app.static" = ["*.html", "*.css", "js/*.js", "firmware/*/*"]
+"app.static" = [
+    "*.html", "*.css", "js/*.js", "firmware/*/*", "synthdefs/*",
+    "vendor/*.md", "vendor/supersonic/*", "vendor/supersonic/workers/*",
+    "vendor/supersonic-core/*", "vendor/supersonic-core/wasm/*", "vendor/supersonic-core/workers/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

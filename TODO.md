@@ -12,6 +12,19 @@ v1.1 has only been tested against the simulator and demo organ.
 - [ ] Opening the port resets some ESP32 boards: confirm the app resends
       the pattern after the sender's `OK READY`.
 - [ ] Android Chrome: does Web Serial reach the board over USB-OTG?
+- [ ] Listen to the simulated pipes on headphones and on speakers: does
+      the placement read as intended? Tune the pipe tone against the real
+      pipes (`sound/organ_synthdefs.scd`).
+
+## Listening stage
+
+- [ ] Set the default pitches to the real pipes' notes once known.
+- [ ] Include the stage layout and pitches in preset export/import.
+- [ ] Optional: a measured-HRTF mode for convincing front/back (e.g.
+      a Web Audio `PannerNode` fed by a multichannel SuperSonic output, or
+      an HRTF convolution in SuperCollider).
+- [ ] Let the stage plan the real installation too (print or export the
+      room layout).
 
 ## Accessibility: keyboard and screen-reader access to the grid
 

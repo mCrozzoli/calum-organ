@@ -6,6 +6,24 @@
   <title>Calum Organ</title>
   <meta name="description" content="Step sequencer for Calum's ESP32 pipe organ. Connects to the boards over USB from Chrome or Edge.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='10' width='5' height='18' rx='2' fill='%23f2a93b'/%3E%3Crect x='13.5' y='4' width='5' height='24' rx='2' fill='%23f2a93b'/%3E%3Crect x='23' y='14' width='5' height='14' rx='2' fill='%23f2a93b'/%3E%3C/svg%3E">
+  <meta name="color-scheme" content="dark light">
+  <script>
+    // Apply the theme before first paint, so light mode never flashes dark.
+    // Choice: ?theme=light|dark|auto in the URL (this visit only), else the
+    // saved choice, else auto (= the computer's light/dark setting).
+    (function () {
+      var pref = "auto";
+      try {
+        pref = new URLSearchParams(location.search).get("theme")
+          || localStorage.getItem("calumOrgan.theme") || "auto";
+      } catch (e) {}
+      if (pref !== "light" && pref !== "dark") pref = "auto";
+      var light = pref === "light"
+        || (pref === "auto" && matchMedia("(prefers-color-scheme: light)").matches);
+      document.documentElement.dataset.theme = light ? "light" : "dark";
+      document.documentElement.dataset.themePref = pref;
+    })();
+  </script>
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -40,6 +58,7 @@
     </div>
 
     <div class="group end">
+      <button id="themeBtn" type="button"></button>
       <details class="menu" id="moreMenu">
         <summary>More ▾</summary>
         <div class="menu-items" role="menu">
@@ -72,6 +91,42 @@
     </section>
 
     <section class="peers" id="peers" aria-label="Pipes"></section>
+
+    <!-- Simulated sound: SuperCollider (scsynth) running in the browser. -->
+    <section class="stage-wrap" id="stageWrap" aria-labelledby="stageTitle">
+      <div class="stage-head">
+        <h2 id="stageTitle">Listen <span class="sub">simulated pipes · SuperCollider in the browser</span></h2>
+        <div class="stage-controls">
+          <button id="soundBtn" class="accent" aria-pressed="false">🔊 Sound on</button>
+          <label class="ctl">Volume <input type="range" id="volumeInput" min="0" max="1" step="0.01"></label>
+          <select id="outputSelect" aria-label="Output">
+            <option value="headphones">🎧 Headphones (3D)</option>
+            <option value="speakers">🔈 Speakers (stereo)</option>
+          </select>
+          <select id="roomSelect" aria-label="Room size">
+            <option value="small">Small room · 6 m</option>
+            <option value="medium">Medium room · 12 m</option>
+            <option value="large">Large room · 24 m</option>
+          </select>
+          <div class="meter" title="Output level, left and right">
+            <div class="row"><span>L</span><div class="bar"><i id="meterL"></i></div></div>
+            <div class="row"><span>R</span><div class="bar"><i id="meterR"></i></div></div>
+          </div>
+        </div>
+      </div>
+      <p class="stage-note" id="stageNote" role="status"></p>
+      <div class="stage-body">
+        <div class="stage" id="stage" aria-label="The room seen from above: drag the pipes and yourself">
+          <span class="front-label">▲ front</span>
+        </div>
+        <div class="stage-side">
+          <div class="pitches" id="pitches" aria-label="Pipe pitches"></div>
+          <button id="resetStage" type="button">Reset layout</button>
+        </div>
+      </div>
+      <p class="hint">Drag the pipes, and yourself (🎧), around the room; rings are every 2 m.
+        Click a pipe to hear it; arrow keys move the selected one.</p>
+    </section>
 
     <details class="log-wrap" id="logWrap">
       <summary>

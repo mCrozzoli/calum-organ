@@ -67,6 +67,13 @@ def test_no_escape_from_static_dir(running_server, path):
     assert exc.value.code in (403, 404)
 
 
+def test_sound_engine_files_served_with_the_right_types(running_server):
+    with urllib.request.urlopen(running_server + "/vendor/supersonic-core/wasm/scsynth-nrt.wasm", timeout=5) as r:
+        assert r.headers["Content-Type"] == "application/wasm"
+    with urllib.request.urlopen(running_server + "/synthdefs/organPipe.scsyndef", timeout=2) as r:
+        assert r.read(4) == b"SCgf"
+
+
 def test_unknown_api_is_404(running_server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         get(running_server, "/api/nope")

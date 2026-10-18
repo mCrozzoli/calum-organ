@@ -14,6 +14,8 @@
 
 import { createBackend } from "./backends.js";
 import { validatePattern } from "./protocol.js";
+import { OrganSound } from "./sound.js";
+import { PIPES, ROOMS, MIN_NOTE, MAX_NOTE, noteName, defaultStage, sanitizeStage, describe } from "./stage.js";
 
 const MAX_PIPES = 8;
 const BEAT = 4;          // steps per beat group
@@ -198,6 +200,20 @@ function layoutCanvas() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+// Grid colours come from the theme (app.css), re-read when it changes.
+let palette = {};
+function readPalette() {
+  const css = getComputedStyle(document.documentElement);
+  const v = (name) => css.getPropertyValue(name).trim();
+  palette = {
+    cellOn: v("--cell-on"), cellOff: v("--cell-off"), cellOffBeat: v("--cell-off-beat"),
+    step: v("--step-text"), stepBeat: v("--step-text-beat"), stepNow: v("--step-text-now"),
+    label: v("--muted"),
+    playLive: v("--playhead-live"),
+    playPreview: v("--playhead-preview"), playPreviewLine: v("--playhead-preview-line"),
+  };
+}
+
 function drawGrid() {
   const { cell, cellH } = geo;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -208,21 +224,21 @@ function drawGrid() {
   ctx.font = "10px -apple-system, Helvetica, sans-serif";
   for (let j = 0; j < state.cols; j++) {
     if (cell < 20 && j % BEAT !== 0) continue;
-    ctx.fillStyle = j === state.playhead ? "#ffffff" : (j % BEAT === 0 ? "#c4cad6" : "#6b7385");
+    ctx.fillStyle = j === state.playhead ? palette.stepNow : (j % BEAT === 0 ? palette.stepBeat : palette.step);
     ctx.fillText(String(j + 1), colX(j) + cell / 2, HEADER_H / 2);
   }
 
   // row labels (pipe names)
   ctx.font = "bold 12px -apple-system, Helvetica, sans-serif";
   for (let i = 0; i < state.rows; i++) {
-    ctx.fillStyle = "#9aa3b2";
+    ctx.fillStyle = palette.label;
     ctx.fillText(pipeName(i), LABEL_W / 2 - 2, rowY(i) + cellH / 2);
   }
 
   for (let i = 0; i < state.rows; i++) {
     for (let j = 0; j < state.cols; j++) {
       const on = state.grid[i][j];
-      ctx.fillStyle = on ? "#f2a93b" : (j % BEAT === 0 ? "#343a48" : "#262b36");
+      ctx.fillStyle = on ? palette.cellOn : (j % BEAT === 0 ? palette.cellOffBeat : palette.cellOff);
       ctx.fillRect(colX(j), rowY(i), cell, cellH);
     }
   }
@@ -230,12 +246,12 @@ function drawGrid() {
   if (state.playhead >= 0 && state.playhead < state.cols) {
     const x = colX(state.playhead);
     const live = isLive();
-    ctx.fillStyle = live ? "rgba(255,255,255,0.22)" : "rgba(92,209,255,0.16)";
+    ctx.fillStyle = live ? palette.playLive : palette.playPreview;
     ctx.fillRect(x, rowY(0), cell, rowY(state.rows - 1) + cellH - rowY(0));
     if (!live) {
       // preview playhead is outlined, so it never looks like the organ
       ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = "rgba(92,209,255,0.8)";
+      ctx.strokeStyle = palette.playPreviewLine;
       ctx.strokeRect(x + 0.5, rowY(0) + 0.5, cell - 1, rowY(state.rows - 1) + cellH - rowY(0) - 1);
       ctx.setLineDash([]);
     }
@@ -370,6 +386,7 @@ function renderPeers() {
       strip.appendChild(h);
     }
   });
+  renderStageTokens();
 }
 
 // ---------------------------------------------------------------- truth bar
@@ -582,6 +599,7 @@ function setPlayhead(step) {
   state.playhead = step;
   drawGrid();
   renderPeers();
+  updateSoundGates();
 }
 
 // Preview: only when not connected, and drawn differently from the real one.
@@ -876,6 +894,8 @@ function onStatus(ev) {
     setPlayhead(-1);
     if (was) refreshPorts();     // e.g. a port chosen just now is listed now
   }
+  updateSoundGates();
+  renderStageNote();
   renderPeers();
   renderTruth();
 }
@@ -954,6 +974,294 @@ async function quitApp() {
   }
   showClosed();
 }
+
+// ---------------------------------------------------------------- listening stage
+// Simulated pipes you can hear (demo organ and preview only: with the real
+// organ connected you hear the real pipes). Sound is SuperCollider running in
+// the browser (sound.js); placement and pitch live in `stage` (stage.js).
+const STAGE_KEY = "calumOrgan.stage.v1";
+const stageEl = $("stage");
+let stage = loadStage();
+const stageTokens = [];          // pipe buttons A..H
+let listenerToken = null;
+
+const sound = new OrganSound({
+  onLog: (line, level) => logLine(line, level),
+  onState: () => { renderSoundButton(); renderStageNote(); },
+});
+
+function loadStage() {
+  try { return sanitizeStage(JSON.parse(localStorage.getItem(STAGE_KEY))); }
+  catch (_) { return defaultStage(); }
+}
+let stageSaveTimer = null;
+function saveStage() {
+  clearTimeout(stageSaveTimer);
+  stageSaveTimer = setTimeout(() => {
+    try { localStorage.setItem(STAGE_KEY, JSON.stringify(stage)); } catch (_) {}
+  }, 300);
+}
+
+// What a pipe's valve is doing right now (same rule as the pipe cards).
+const pipeOpen = (i) => i < state.rows && state.playhead >= 0 && state.grid[i]?.[state.playhead] === 1;
+
+function updateSoundGates() {
+  if (!sound.active) return;
+  if (isLive()) { sound.closeAll(); return; }
+  for (let i = 0; i < PIPES; i++) sound.setGate(i, pipeOpen(i));
+}
+
+function buildStage() {
+  for (let i = 0; i < PIPES; i++) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "stage-token";
+    b.innerHTML = `${pipeName(i)}<span class="n"></span>`;
+    makeDraggable(b, () => stage.pipes[i], () => sound.setPipe(i, stage));
+    b.addEventListener("click", () => { if (!b._dragged) auditionPipe(i); });
+    stageTokens.push(b);
+    stageEl.appendChild(b);
+  }
+  listenerToken = document.createElement("button");
+  listenerToken.type = "button";
+  listenerToken.className = "stage-token listener";
+  listenerToken.textContent = "🎧";
+  listenerToken.setAttribute("aria-label", "You (the listener). Drag or use arrow keys to move.");
+  makeDraggable(listenerToken, () => stage.listener, () => sound.applyStage(stage));
+  stageEl.appendChild(listenerToken);
+
+  const pitches = $("pitches");
+  pitches.innerHTML = "";
+  for (let i = 0; i < PIPES; i++) {
+    const row = document.createElement("div");
+    row.className = "pitch-row";
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", `Pipe ${pipeName(i)} pitch`);
+    for (let n = MIN_NOTE; n <= MAX_NOTE; n++) sel.add(new Option(noteName(n), String(n)));
+    sel.addEventListener("change", () => {
+      stage.pipes[i].note = parseInt(sel.value, 10);
+      sound.setPipe(i, stage);
+      renderStageTokens();
+      saveStage();
+      auditionPipe(i);
+    });
+    const play = document.createElement("button");
+    play.type = "button";
+    play.textContent = "▶";
+    play.title = `Hear pipe ${pipeName(i)}`;
+    play.setAttribute("aria-label", play.title);
+    play.addEventListener("click", () => auditionPipe(i));
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = pipeName(i);
+    row.append(name, sel, play);
+    pitches.appendChild(row);
+  }
+
+  $("volumeInput").addEventListener("input", (e) => {
+    stage.volume = parseFloat(e.target.value);
+    sound.setVolume(stage.volume);
+    saveStage();
+  });
+  $("outputSelect").addEventListener("change", (e) => {
+    stage.output = e.target.value;
+    sound.applyStage(stage);
+    renderStageNote();
+    saveStage();
+  });
+  $("roomSelect").addEventListener("change", (e) => {
+    stage.room = e.target.value;
+    sound.applyStage(stage);
+    renderStageTokens();
+    saveStage();
+  });
+  $("resetStage").addEventListener("click", () => {
+    stage = defaultStage();
+    syncStageControls();
+    sound.applyStage(stage);
+    renderStageTokens();
+    saveStage();
+  });
+  $("soundBtn").addEventListener("click", toggleSound);
+  syncStageControls();
+  renderStageTokens();
+  renderSoundButton();
+  renderStageNote();
+}
+
+function syncStageControls() {
+  $("volumeInput").value = stage.volume;
+  $("outputSelect").value = stage.output;
+  $("roomSelect").value = stage.room;
+  [...$("pitches").querySelectorAll("select")].forEach((sel, i) => { sel.value = String(stage.pipes[i].note); });
+}
+
+function renderStageTokens() {
+  if (!stageTokens.length) return;
+  const metres = ROOMS[stage.room];
+  stageEl.style.setProperty("--lx", `${stage.listener.x * 100}%`);
+  stageEl.style.setProperty("--ly", `${stage.listener.y * 100}%`);
+  stageEl.style.setProperty("--ring", `calc(200cqw / ${metres})`);
+  stageTokens.forEach((b, i) => {
+    const p = stage.pipes[i];
+    b.style.left = `${p.x * 100}%`;
+    b.style.top = `${p.y * 100}%`;
+    b.classList.toggle("open", pipeOpen(i) && !isLive());
+    b.classList.toggle("unused", i >= state.rows);
+    b.querySelector(".n").textContent = noteName(p.note);
+    b.setAttribute("aria-label", `Pipe ${pipeName(i)}, ${noteName(p.note)}, ${describe(p, stage.listener, metres)}`
+      + `${i >= state.rows ? " (not in the pattern)" : ""}. Drag or use arrow keys to move; Enter to hear it.`);
+  });
+  listenerToken.style.left = `${stage.listener.x * 100}%`;
+  listenerToken.style.top = `${stage.listener.y * 100}%`;
+  [...$("pitches").children].forEach((row, i) => row.classList.toggle("unused", i >= state.rows));
+}
+
+// Drag with mouse, pen or touch; arrow keys move by 2% (Shift: 10%).
+function makeDraggable(el, getPos, onMove) {
+  let start = null;
+  const moveTo = (x, y) => {
+    const p = getPos();
+    p.x = clamp(x, 0, 1);
+    p.y = clamp(y, 0, 1);
+    renderStageTokens();
+    onMove();
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    el.setPointerCapture(e.pointerId);
+    start = { x: e.clientX, y: e.clientY };
+    el._dragged = false;
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    if (!el._dragged && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 4) return;
+    el._dragged = true;
+    el.classList.add("dragging");
+    const r = stageEl.getBoundingClientRect();
+    moveTo((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+  });
+  const end = () => {
+    if (!start) return;
+    start = null;
+    el.classList.remove("dragging");
+    if (el._dragged) saveStage();
+    // The click that follows a drag must not audition the pipe.
+    setTimeout(() => { el._dragged = false; }, 0);
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+  el.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 0.1 : 0.02;
+    const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+    if (!d) return;
+    e.preventDefault();
+    const p = getPos();
+    moveTo(p.x + d[0], p.y + d[1]);
+    saveStage();
+  });
+}
+
+async function auditionPipe(i) {
+  if (isLive()) { toast("Connected to the real organ: listen to the real pipes"); return; }
+  if (!sound.active) {
+    await toggleSound();
+    if (!sound.active) return;
+  }
+  sound.audition(i);
+}
+
+async function toggleSound() {
+  if (sound.state === "on") { await sound.stop(); return; }
+  try {
+    await sound.start(stage);       // this click is the gesture browsers require
+    updateSoundGates();
+    meterLoop();
+  } catch (e) {
+    toast("Sound couldn't start: " + (e.message || e), "err");
+  }
+}
+
+function renderSoundButton() {
+  const b = $("soundBtn");
+  const on = sound.state === "on";
+  b.textContent = sound.state === "starting" ? "Starting…" : on ? "🔇 Sound off" : "🔊 Sound on";
+  b.disabled = sound.state === "starting";
+  b.setAttribute("aria-pressed", String(on));
+}
+
+function renderStageNote() {
+  const note = $("stageNote");
+  let text = "";
+  let warn = false;
+  if (isLive()) {
+    text = "Connected to the real organ: the simulated sound is muted. Arrange the room here to plan where the pipes go.";
+  } else if (sound.state === "error") {
+    text = "The sound engine failed to start. See the log for details.";
+    warn = true;
+  } else if (sound.state !== "on") {
+    text = "Hear the demo organ (or the preview) as simulated pipes. Best with headphones.";
+  } else if (sound.latencyMs > 60) {
+    text = `Sound on. Your audio output adds ${sound.latencyMs} ms delay (Bluetooth?): wired headphones keep it in time.`;
+    warn = true;
+  } else {
+    text = stage.output === "headphones"
+      ? "Sound on: headphones mode places each pipe around you (left/right, near/far)."
+      : "Sound on: speakers mode pans pipes left/right and fades them with distance.";
+  }
+  note.textContent = text;
+  note.classList.toggle("warn", warn);
+}
+
+let meterRunning = false;
+function meterLoop() {
+  if (meterRunning) return;
+  meterRunning = true;
+  const bars = [$("meterL"), $("meterR")];
+  const frame = () => {
+    const lv = sound.levels();
+    if (!lv) {
+      bars.forEach((b) => { b.style.width = "0"; });
+      meterRunning = false;
+      return;
+    }
+    lv.forEach((db, k) => { bars[k].style.width = `${clamp((db + 60) / 60, 0, 1) * 100}%`; });
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- theme
+// Auto follows the computer's light/dark setting; Light and Dark override it.
+// The inline script in index.html applies it before first paint.
+const THEME_KEY = "calumOrgan.theme";
+const THEMES = ["auto", "light", "dark"];
+const THEME_LABEL = { auto: "◐ Auto", light: "☀ Light", dark: "☾ Dark" };
+const systemLight = matchMedia("(prefers-color-scheme: light)");
+
+function applyTheme(pref) {
+  const light = pref === "light" || (pref === "auto" && systemLight.matches);
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  document.documentElement.dataset.themePref = pref;
+  const btn = $("themeBtn");
+  btn.textContent = THEME_LABEL[pref];
+  btn.title = pref === "auto"
+    ? `Theme: auto (following your computer: ${light ? "light" : "dark"}). Click for light.`
+    : `Theme: ${pref}. Click for ${pref === "light" ? "dark" : "auto"}.`;
+  btn.setAttribute("aria-label", btn.title);
+  readPalette();
+  drawGrid();
+}
+
+$("themeBtn").addEventListener("click", () => {
+  const current = document.documentElement.dataset.themePref || "auto";
+  const next = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
+  try { localStorage.setItem(THEME_KEY, next); } catch (_) { /* not saved, still applied */ }
+  applyTheme(next);
+});
+systemLight.addEventListener("change", () => {
+  if ((document.documentElement.dataset.themePref || "auto") === "auto") applyTheme("auto");
+});
 
 // ---------------------------------------------------------------- settings
 function relayout() {
@@ -1036,7 +1344,9 @@ window.addEventListener("resize", relayout);
 
 // ---------------------------------------------------------------- init
 async function init() {
+  applyTheme(document.documentElement.dataset.themePref || "auto");
   buildPeers();
+  buildStage();
   restoreWorking();
   relayout();
   backend = await createBackend(onBackendEvent);
@@ -1047,5 +1357,9 @@ async function init() {
   backend.start();
   refreshPorts();
   refreshPresets();
+  // ?debug exposes internals to the browser console (and to tests).
+  if (new URLSearchParams(location.search).has("debug")) {
+    window.organ = { state, sound, getStage: () => stage, backend };
+  }
 }
 init();
