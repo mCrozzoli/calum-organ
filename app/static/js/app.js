@@ -12,7 +12,8 @@
 //   - Not connected: a local timer animates a clearly labelled PREVIEW.
 //   - Demo organ: labelled DEMO and drawn like the preview; nothing real moves.
 
-import { createBackend, JoinError } from "./backends.js";
+import { createBackend, JoinError, OnlineBackend } from "./backends.js";
+import { RoomHost, RoomGuestBackend, cleanCode, isCode, makeCode } from "./room.js";
 import { validatePattern } from "./protocol.js";
 import { OrganSound } from "./sound.js";
 import { SOURCES } from "./corpus.js";
@@ -48,7 +49,9 @@ const state = {
   quitting: false,
   // shared session (local app): one pattern, many pages
   shared: false,
-  role: "host",          // "host" (the laptop) or "guest" (joined over Wi-Fi)
+  role: "host",          // "host" (runs the organ) or "guest" (joined)
+  perm: "paint",         // a guest's permission: "paint", "pipe" or "cohost"
+  myPipe: null,          // the row a "pipe" guest may paint
   rev: null,             // the session revision this page shows
   you: null,             // this page's connection id
   users: [],             // who's connected: {id, name, role, colour}
@@ -66,8 +69,14 @@ state.grid = makeGrid(state.rows, state.cols);
 state.peers = freshPeers();
 
 let backend = null;
+let room = null;           // RoomHost while this page hosts an online room
 // Live = a real organ is connected (not the demo).
 const isLive = () => state.connected && !state.demo;
+// The real pipes are in earshot: a room guest may be far from the organ.
+const hearsOrgan = () => isLive() && backend?.kind !== "room";
+const inRoomAsGuest = () => backend?.kind === "room";
+const conducts = () => state.role === "host" || state.perm === "cohost";
+const mayPaintRow = (i) => state.perm !== "pipe" || i === state.myPipe;
 
 // ---------------------------------------------------------------- unsaved changes
 const patternKey = () => JSON.stringify([state.tempo, state.grid]);
@@ -240,17 +249,20 @@ function drawGrid() {
   // row labels (pipe names)
   ctx.font = "bold 12px -apple-system, Helvetica, sans-serif";
   for (let i = 0; i < state.rows; i++) {
-    ctx.fillStyle = palette.label;
+    ctx.fillStyle = state.perm === "pipe" && i === state.myPipe ? palette.stepNow : palette.label;
     ctx.fillText(pipeName(i), LABEL_W / 2 - 2, rowY(i) + cellH / 2);
   }
 
+  // A guest who owns one pipe sees the other rows dimmed (they can't paint them).
   for (let i = 0; i < state.rows; i++) {
+    ctx.globalAlpha = mayPaintRow(i) ? 1 : 0.35;
     for (let j = 0; j < state.cols; j++) {
       const on = state.grid[i][j];
       ctx.fillStyle = on ? palette.cellOn : (j % BEAT === 0 ? palette.cellOffBeat : palette.cellOff);
       ctx.fillRect(colX(j), rowY(i), cell, cellH);
     }
   }
+  ctx.globalAlpha = 1;
 
   // Someone else just painted these: outline them in their colour.
   const now = performance.now();
@@ -306,7 +318,7 @@ function paintLine(from, to) {
   for (let k = 1; k <= n; k++) {
     const i = Math.round(i0 + ((i1 - i0) * k) / n);
     const j = Math.round(j0 + ((j1 - j0) * k) / n);
-    if (state.grid[i][j] !== painting) {
+    if (mayPaintRow(i) && state.grid[i][j] !== painting) {
       state.grid[i][j] = painting;
       paintedCells.push([i, j, painting]);
       changed = true;
@@ -320,6 +332,7 @@ function onGridChanged() {
   redrawPattern();
   if (state.shared) queueCells(paintedCells);
   else schedulePatternSend();
+  if (room && paintedCells.length) room.cells(paintedCells, state.you);
   paintedCells = [];
 }
 
@@ -329,6 +342,7 @@ function commitWhole() {
   redrawPattern();
   if (state.shared) scheduleReplace();
   else schedulePatternSend();
+  if (room) scheduleRoomPattern();
 }
 
 function redrawPattern() {
@@ -341,6 +355,7 @@ function redrawPattern() {
 canvas.addEventListener("pointerdown", (e) => {
   const c = cellAt(e); if (!c) return;
   e.preventDefault();
+  if (!mayPaintRow(c[0])) { toast(`You paint pipe ${pipeName(state.myPipe)}: the host gave you that row`); return; }
   canvas.setPointerCapture(e.pointerId);
   painting = e.button === 2 ? 0 : 1 - state.grid[c[0]][c[1]];
   state.grid[c[0]][c[1]] = painting;
@@ -457,13 +472,18 @@ function renderTruth() {
     text = `Connected to ${state.port}. The organ is silent.`;
   }
   if (state.role === "guest") {
+    const who = state.perm === "cohost" ? "you and the host run" : "the host runs";
+    const mine = state.perm === "pipe" ? `pipe ${pipeName(state.myPipe)}` : "the pattern";
     if (!state.connected) {
-      mode = "WAITING";
-      cls = "stopped";
-      text = "The host hasn't connected the organ yet. Paint away: the pattern goes to the organ when they do.";
+      mode = state.playing ? "PREVIEW" : "WAITING";
+      cls = state.playing ? "preview" : "stopped";
+      text = state.playing
+        ? `The host is previewing: no organ is connected yet. Paint ${mine}.`
+        : `The host hasn't connected the organ yet. Paint ${mine}: it goes to the organ when they do.`;
     } else {
-      text = state.playing ? "The organ is playing this pattern. Paint to change it; the host runs play and tempo."
-                           : "Connected to the organ. Paint the pattern; the host starts and stops it.";
+      text = state.playing ? `The organ is playing this pattern. Paint ${mine}; ${who} play and tempo.`
+                           : `Connected to the organ. Paint ${mine}; ${who} play and stop.`;
+      if (state.demo) text = `Demo organ (no hardware). ${text.replace("Connected to the organ. ", "")}`;
     }
   }
   modeBadge.textContent = mode;
@@ -491,6 +511,7 @@ function renderTruth() {
   playBtn.setAttribute("aria-pressed", String(state.playing));
   playBtn.disabled = state.transportBusy;
   renderPresetState();
+  relayOrgan();
 }
 setInterval(() => { if (state.connected && state.playing) renderTruth(); }, 500);
 
@@ -640,7 +661,7 @@ async function sendQueuedCells() {
 
 let replaceTimer = null;
 function scheduleReplace() {
-  if (state.role !== "host") return;
+  if (!conducts()) return;
   clearTimeout(replaceTimer);
   replaceTimer = setTimeout(async () => {
     try {
@@ -674,6 +695,7 @@ function applyPattern(ev) {
 
 // ---------------------------------------------------------------- transport
 async function play() {
+  if (inRoomAsGuest()) { remoteTransport("play"); return; }
   if (!state.connected) { startPreview(); return; }
   state.transportBusy = true;
   renderTruth();
@@ -693,6 +715,7 @@ async function play() {
 }
 
 async function stop() {
+  if (inRoomAsGuest()) { remoteTransport("stop"); return; }
   if (!state.connected) { stopPreview(); return; }
   state.transportBusy = true;
   renderTruth();
@@ -707,6 +730,7 @@ async function stop() {
 }
 
 function setPlayhead(step) {
+  if (room && step !== state.playhead) room.step(step);
   state.playhead = step;
   drawGrid();
   renderPeers();
@@ -771,7 +795,7 @@ function restoreWorking() {
 const PRESET_RE = /^[\w][\w \-.]{0,63}$/;
 
 async function refreshPresets() {
-  if (state.role === "guest") return [];
+  if (!conducts()) return [];
   try {
     const names = await backend.presets.list();
     presetSelect.innerHTML = "";
@@ -996,6 +1020,7 @@ function onSessionSnapshot(ev) {
 }
 
 function onStatus(ev) {
+  if (ev.perm) setPerm(ev.perm, ev.pipe);
   if (ev.session) onSessionSnapshot(ev);
   const was = state.connected;
   state.connected = !!ev.connected;
@@ -1019,10 +1044,10 @@ function onStatus(ev) {
     }
   }
   if (!state.connected) {
-    state.playing = false;
+    if (!inRoomAsGuest()) state.playing = false;   // a room guest may see the host's preview
     state.dirty = false;
     state.sendError = null;
-    setPlayhead(-1);
+    if (!state.playing) setPlayhead(-1);
     if (was) refreshPorts();     // e.g. a port chosen just now is listed now
   }
   updateSoundGates();
@@ -1036,7 +1061,8 @@ function onBackendEvent(ev) {
       case "log": logLine(ev.line, ev.level); break;
       case "status": onStatus(ev); break;
       case "step":
-        if (!state.connected) break;
+        // A room guest also follows the host's preview playhead.
+        if (!state.connected && !inRoomAsGuest()) break;
         state.lastStepAt = Date.now();
         setPlayhead(ev.step);
         break;
@@ -1078,9 +1104,23 @@ function onBackendEvent(ev) {
       case "ports":
         refreshPorts();
         break;
+      case "role":
+        setPerm(ev.perm, ev.pipe);
+        toast(ev.perm === "cohost" ? "The host made you a co-host: you can play, stop and change the settings too"
+          : ev.perm === "pipe" ? `The host gave you pipe ${pipeName(ev.pipe)} to paint`
+          : "You can paint every pipe", "ok");
+        break;
+      case "reconnecting":
+        truthBar.className = "truth warn";
+        modeBadge.textContent = "RECONNECTING";
+        truthText.textContent = "Lost the room for a moment (the host may be handing it over). Reconnecting…";
+        break;
+      case "become-host":
+        becomeHost(ev);
+        break;
       case "offline":
         if (state.role === "guest") {
-          showClosed("The host stopped sharing, or the laptop is out of reach.");
+          showClosed(ev.reason || "The host stopped sharing, or the laptop is out of reach.");
           break;
         }
         truthBar.className = "truth warn";
@@ -1090,6 +1130,7 @@ function onBackendEvent(ev) {
       case "peer":
         if (ev.peer >= 0 && ev.peer < MAX_PIPES) {
           state.peers[ev.peer] = { seq: ev.seq, ok: !!ev.ok };
+          room?.peerAck({ peer: ev.peer, seq: ev.seq, ok: !!ev.ok });
           renderPeers();
           renderTruth();
         }
@@ -1098,26 +1139,52 @@ function onBackendEvent(ev) {
 }
 
 // ---------------------------------------------------------------- playing together
-// The local app can share its session: phones and laptops on the same Wi-Fi
-// join with a QR code. Guests paint; the host keeps the organ, play/stop,
-// tempo and presets.
+// Two ways to play together, one screen:
+//   - the local app shares its session over Wi-Fi (join code + QR code);
+//   - online, a page hosts a room (room.js): anyone with the room code joins
+//     over the internet. The host gives each person a role: paint everything,
+//     own one pipe, or co-host (also play/stop, settings, presets, Clear),
+//     and can hand the host role to someone else.
 function applyRole() {
   const guest = state.role === "guest";
-  document.body.dataset.role = state.role;
-  for (const el of [rowsInput, colsInput, tempoInput]) el.disabled = guest;
-  $("stageWrap").hidden = guest;        // simulated sound needs the host's secure page
+  document.body.dataset.role = guest && state.perm === "cohost" ? "cohost" : state.role;
+  for (const el of [rowsInput, colsInput, tempoInput]) el.disabled = !conducts();
+  // Simulated sound needs a secure page (a room guest's page is; a Wi-Fi guest's isn't).
+  $("stageWrap").hidden = guest && !window.isSecureContext;
   logWrap.hidden = guest;
   quitBtn.hidden = guest || !backend?.canQuit;
-  $("shareBtn").hidden = !(state.shared && !guest);
-  $("gridHint").textContent = guest
-    ? "Tap or drag to paint · drag from a lit cell to erase. Everyone here sees your changes."
-    : "Click or drag to paint · drag from a lit cell to erase · Space = play/stop · C = clear";
+  const shareBtn = $("shareBtn");
+  shareBtn.hidden = guest || !backend;
+  shareBtn.textContent = state.shared ? "Share…" : "Play together…";
+  $("gridHint").textContent = !guest
+    ? "Click or drag to paint · drag from a lit cell to erase · Space = play/stop · C = clear"
+    : state.perm === "pipe"
+      ? `Tap or drag along pipe ${pipeName(state.myPipe)}'s row to paint · drag from a lit cell to erase.`
+      : "Tap or drag to paint · drag from a lit cell to erase. Everyone here sees your changes."
+        + (state.perm === "cohost" ? " Space = play/stop." : "");
   renderPresence();
+  drawGrid();
+}
+
+function setPerm(perm, pipe) {
+  state.perm = perm;
+  state.myPipe = perm === "pipe" ? pipe : null;
+  applyRole();
+  if (conducts()) refreshPresets();
+  renderTruth();
+}
+
+function roleTag(u) {
+  if (u.role === "host") return "host";
+  if (u.perm === "cohost") return "co-host";
+  if (u.perm === "pipe") return `pipe ${pipeName(u.pipe)}`;
+  return "";
 }
 
 function renderPresence() {
   const el = $("presence");
-  const show = state.shared && (state.users.length > 1 || state.sharing.on || state.role === "guest");
+  const show = (state.shared || !!room)
+    && (state.users.length > 1 || state.sharing.on || !!room || state.role === "guest");
   el.hidden = !show;
   if (!show) return;
   el.innerHTML = "";
@@ -1127,24 +1194,36 @@ function renderPresence() {
   el.appendChild(label);
   for (const u of state.users) {
     const mine = u.id === state.you;
-    const chip = document.createElement(mine ? "button" : "span");
+    const manage = !!room && !mine;          // the room's host sets everyone's role
+    const chip = document.createElement(mine || manage ? "button" : "span");
     chip.className = "who";
     const dot = document.createElement("span");
     dot.className = "dot";
     dot.style.background = u.colour;      // the person's colour, also used for their edits
-    chip.append(dot, `${u.name}${u.role === "host" && !mine ? " (host)" : ""}${mine ? " (you)" : ""}`);
+    const tag = roleTag(u);
+    chip.append(dot, `${u.name}${mine ? " (you)" : ""}`);
+    if (tag && !(mine && u.role === "host" && !room)) {
+      const t = document.createElement("span");
+      t.className = "tag";
+      t.textContent = tag;
+      chip.append(t);
+    }
     if (mine) {
       chip.type = "button";
       chip.title = "Change your name";
       chip.addEventListener("click", renameMe);
+    } else if (manage) {
+      chip.type = "button";
+      chip.title = `Choose what ${u.name} can do`;
+      chip.addEventListener("click", () => openPerson(u.id));
     }
     el.appendChild(chip);
   }
-  if (state.role === "host" && state.sharing.on) {
+  if (state.role === "host" && (state.sharing.on || room)) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "link";
-    b.textContent = `Sharing · code ${state.sharing.code}`;
+    b.textContent = room ? `Room ${room.code}` : `Sharing · code ${state.sharing.code}`;
     b.addEventListener("click", openShareDialog);
     el.appendChild(b);
   }
@@ -1166,7 +1245,9 @@ async function askName(current = "") {
 }
 async function renameMe() {
   const name = await askName(storedName());
-  if (name) backend.rename(name);
+  if (!name) return;
+  if (room) room.rename(name);
+  else backend.rename(name);
 }
 function askJoinCode(wrongBefore) {
   return askText({
@@ -1177,14 +1258,24 @@ function askJoinCode(wrongBefore) {
   });
 }
 
+async function drawQr(el, url) {
+  const { default: qrcode } = await import("../vendor/qrcode-generator/qrcode.mjs");
+  const qr = qrcode(0, "M");
+  qr.addData(url);
+  qr.make();
+  el.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
+}
+
 async function openShareDialog() {
   moreMenu.open = false;
-  const host = state.shared && state.role === "host";
-  $("shareNeedsLocal").hidden = host;
-  $("shareControls").hidden = !host;
-  if (host) {
+  const local = state.shared && state.role === "host";
+  $("roomPanel").hidden = local;
+  $("shareControls").hidden = !local;
+  if (local) {
     try { state.sharing = await backend.shareInfo(); } catch (_) {}
     await renderShareDialog();
+  } else {
+    await renderRoomPanel();
   }
   $("shareDialog").showModal();
 }
@@ -1205,11 +1296,7 @@ async function renderShareDialog() {
     $("shareQr").textContent = "No network found: connect this laptop to Wi-Fi or turn on its hotspot.";
     return;
   }
-  const { default: qrcode } = await import("../vendor/qrcode-generator/qrcode.mjs");
-  const qr = qrcode(0, "M");
-  qr.addData(sel.value);
-  qr.make();
-  $("shareQr").innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
+  await drawQr($("shareQr"), sel.value);
 }
 
 $("shareUrl").addEventListener("change", renderShareDialog);
@@ -1240,6 +1327,255 @@ $("shareStop").addEventListener("click", async () => {
 $("playTogether").addEventListener("click", openShareDialog);
 $("shareBtn").addEventListener("click", openShareDialog);
 
+// ---- online rooms: hosting
+let knownUsers = [];        // after a handover: everyone's roles, kept as they rejoin
+const roomUrl = (code) => `${location.origin}${location.pathname}?room=${code}`
+  + (new URLSearchParams(location.search).has("debug") ? "&debug" : "");
+
+function organStatus() {
+  return {
+    connected: state.connected, demo: state.demo, playing: state.playing,
+    port: state.demo ? "demo organ" : state.port,
+    seq: state.sentSeq, sending: state.sending || state.dirty, error: state.sendError,
+  };
+}
+
+// Guests see what the organ is doing: sent whenever it changes.
+let lastRelay = "";
+function relayOrgan(force = false) {
+  if (!room) return;
+  const o = organStatus();
+  const key = JSON.stringify(o);
+  if (key === lastRelay && !force) return;
+  lastRelay = key;
+  room.organ(o);
+}
+
+let roomPatternTimer = null;
+function scheduleRoomPattern() {
+  clearTimeout(roomPatternTimer);
+  roomPatternTimer = setTimeout(() => {
+    room?.pattern(state.tempo, state.grid.map((row) => row.slice()), state.you);
+  }, SEND_DEBOUNCE_MS);
+}
+
+function roomHooks() {
+  return {
+    getSnapshot: () => ({
+      session: { tempo: state.tempo, grid: state.grid, rev: room?.rev ?? 0 },
+      organ: organStatus(),
+    }),
+    getSize: () => ({ rows: state.rows, cols: state.cols }),
+    knownUsers: () => knownUsers,
+    // A guest painted: show it in their colour, send it to the organ, tell everyone.
+    onCells: (cells, user) => {
+      const until = performance.now() + 900;
+      for (const [i, j, v] of cells) {
+        state.grid[i][j] = v;
+        state.flashes.set(`${i},${j}`, { colour: user.colour, until });
+      }
+      redrawPattern();
+      setTimeout(drawGrid, 950);
+      schedulePatternSend();
+      room.cells(cells, user.id);
+    },
+    onReplace: (tempo, grid) => {
+      adoptPattern(tempo, grid);
+      commitWhole();
+    },
+    onTransport: (action) => (action === "play" ? play() : stop()),
+    onUsers: (users) => {
+      state.users = users;
+      renderPresence();
+      if ($("personDialog").open) renderPersonDialog();
+    },
+  };
+}
+
+async function startRoom({ code, name, retries = 1 } = {}) {
+  const r = new RoomHost(roomHooks());
+  await r.start({ code, name: name || storedName() || "Host", retries });
+  room = r;
+  state.you = room.me.id;
+  state.users = room.users;
+  lastRelay = "";
+  relayOrgan(true);
+  applyRole();
+  return room;
+}
+
+async function renderRoomPanel() {
+  $("roomOff").hidden = !!room;
+  $("roomOn").hidden = !room;
+  if (!room) return;
+  const url = roomUrl(room.code);
+  $("roomCode").textContent = room.code;
+  $("roomLink").textContent = url;
+  await drawQr($("roomQr"), url);
+}
+
+$("roomStart").addEventListener("click", async () => {
+  const btn = $("roomStart");
+  btn.disabled = true;
+  btn.textContent = "Opening…";
+  try {
+    const name = storedName() || await askName() || "Host";
+    await startRoom({ code: makeCode(), name });
+    toast(`Room ${room.code} is open: share the link or the QR code`, "ok");
+  } catch (e) {
+    toast("Couldn't open a room: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Open a room";
+  }
+  await renderRoomPanel();
+});
+
+$("roomJoin").addEventListener("click", () => {
+  const code = cleanCode($("roomJoinCode").value);
+  if (!isCode(code)) { toast("A room code has 6 letters and numbers, e.g. K7PQ2M", "err"); return; }
+  location.href = roomUrl(code);
+});
+$("roomJoinCode").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("roomJoin").click(); }
+});
+
+$("roomCopy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(roomUrl(room.code));
+    toast("Link copied", "ok");
+  } catch (_) { toast("Couldn't copy: select the link and copy it", "err"); }
+});
+
+$("roomEnd").addEventListener("click", async () => {
+  const others = state.users.length - 1;
+  if (others) {
+    const go = await askConfirm({
+      title: "Close the room?",
+      body: `${others} ${others > 1 ? "people are" : "person is"} in the room; they'll be disconnected.`,
+      ok: "Close the room",
+      danger: true,
+    });
+    if (!go) return;
+  }
+  closeRoom();
+  await renderRoomPanel();
+});
+
+function closeRoom() {
+  room?.close();
+  room = null;
+  knownUsers = [];
+  state.users = [];
+  applyRole();
+}
+
+// ---- choosing what someone can do
+let personId = null;
+function openPerson(id) {
+  personId = id;
+  renderPersonDialog();
+  $("personDialog").showModal();
+}
+
+function renderPersonDialog() {
+  const u = state.users.find((x) => x.id === personId);
+  if (!u) { $("personDialog").close(); toast("They've left the room"); return; }
+  $("personTitle").textContent = u.name;
+  const sel = $("personPipe");
+  if (!sel.options.length) {
+    for (let i = 0; i < MAX_PIPES; i++) sel.add(new Option(`pipe ${pipeName(i)}`, String(i)));
+  }
+  sel.value = String(u.pipe ?? 0);
+  for (const r of document.querySelectorAll("#personDialog input[name=perm]")) r.checked = r.value === u.perm;
+}
+
+for (const r of document.querySelectorAll("#personDialog input[name=perm]")) {
+  r.addEventListener("change", () => room?.setRole(personId, r.value, parseInt($("personPipe").value, 10)));
+}
+$("personPipe").addEventListener("change", () => {
+  document.querySelector("#personDialog input[value=pipe]").checked = true;
+  room?.setRole(personId, "pipe", parseInt($("personPipe").value, 10));
+});
+$("personRemove").addEventListener("click", async () => {
+  const u = state.users.find((x) => x.id === personId);
+  $("personDialog").close();
+  if (!u) return;
+  const go = await askConfirm({
+    title: `Remove ${u.name}?`,
+    body: "They leave the room. They can rejoin with the link while the room is open.",
+    ok: "Remove",
+    danger: true,
+  });
+  if (go) room?.remove(u.id);
+});
+$("personHost").addEventListener("click", async () => {
+  const u = state.users.find((x) => x.id === personId);
+  $("personDialog").close();
+  if (u) await handOver(u);
+});
+
+// Hand the room to someone else. This page lets go of the organ and rejoins
+// as a co-host; everyone else follows the room to its new host.
+async function handOver(u) {
+  const organ = isLive() ? " This page disconnects from the organ: they need it plugged into their computer (or they play the demo organ)."
+    : "";
+  const go = await askConfirm({
+    title: `Make ${u.name} the host?`,
+    body: `They take over the room: the pattern, the organ and choosing what everyone can do.${organ} You stay in the room as a co-host.`,
+    ok: "Hand over",
+  });
+  if (!go || !room) return;
+  try {
+    if (state.connected) {
+      if (state.playing) await backend.stop();
+      await backend.disconnect();
+    }
+    stopPreview();
+    const code = room.code;
+    await room.handover(u.id);
+    room = null;
+    state.quitting = true;            // no "leave site?" prompt for this reload
+    location.href = roomUrl(code);
+  } catch (e) {
+    toast("Couldn't hand over: " + e.message, "err");
+  }
+}
+
+// ---- online rooms: a guest who's been handed the room
+async function becomeHost(ev) {
+  backend.leave();
+  backend = new OnlineBackend(onBackendEvent);
+  stopPreview();
+  Object.assign(state, {
+    shared: false, role: "host", perm: "paint", myPipe: null,
+    connected: false, demo: false, port: null, playing: false, sentSeq: null, rev: null,
+  });
+  state.peers = freshPeers();
+  document.body.dataset.mode = backend.kind;
+  $("modeName").textContent = "online";
+  $("usbWarning").hidden = backend.usbSupported;
+  history.replaceState(null, "", location.pathname);
+  adoptPattern(ev.session.tempo, ev.session.grid);
+  knownUsers = ev.users || [];
+  backend.start();
+  try {
+    await startRoom({ code: ev.code, retries: 20 });
+    room.rev = ev.session.rev || 0;
+    toast("You're the host now. Connect the organ (or the demo organ) to play.", "ok");
+  } catch (e) {
+    toast("Couldn't take over the room: " + e.message, "err");
+  }
+  applyRole();
+  refreshPorts();
+  refreshPresets();
+  renderTruth();
+}
+
+function remoteTransport(action) {
+  backend[action]().catch((e) => toast(`${action === "play" ? "Play" : "Stop"} failed: ${e.message}`, "err"));
+}
+
 // ---------------------------------------------------------------- quit
 function showClosed(why) {
   state.quitting = true;
@@ -1247,7 +1583,9 @@ function showClosed(why) {
   if (state.role === "guest") {
     $("closedTitle").textContent = "The session has ended";
     $("closedBody").textContent = why || "The host closed Calum Organ. Thanks for playing!";
-    $("closedHint").textContent = "Scan the host's QR code again to rejoin.";
+    $("closedHint").textContent = inRoomAsGuest()
+      ? "To join again, open the host's room link (or check the room code with them)."
+      : "Scan the host's QR code again to rejoin.";
   }
   $("closedScreen").hidden = false;
   document.title = "Calum Organ (closed)";
@@ -1308,7 +1646,7 @@ const pipeOpen = (i) => i < state.rows && state.playhead >= 0 && state.grid[i]?.
 
 function updateSoundGates() {
   if (!sound.active) return;
-  if (isLive()) { sound.closeAll(); return; }
+  if (hearsOrgan()) { sound.closeAll(); return; }
   for (let i = 0; i < PIPES; i++) sound.setGate(i, pipeOpen(i));
 }
 
@@ -1449,7 +1787,7 @@ function renderStageTokens() {
     const p = stage.pipes[i];
     b.style.left = `${p.x * 100}%`;
     b.style.top = `${p.y * 100}%`;
-    b.classList.toggle("open", pipeOpen(i) && !isLive());
+    b.classList.toggle("open", pipeOpen(i) && !hearsOrgan());
     b.classList.toggle("unused", i >= state.rows);
     b.querySelector(".n").textContent = noteName(p.note);
     b.setAttribute("aria-label", `Pipe ${pipeName(i)}, ${noteName(p.note)}, ${describe(p, stage.listener, metres)}`
@@ -1506,7 +1844,7 @@ function makeDraggable(el, getPos, onMove) {
 }
 
 async function auditionPipe(i) {
-  if (isLive()) { toast("Connected to the real organ: listen to the real pipes"); return; }
+  if (hearsOrgan()) { toast("Connected to the real organ: listen to the real pipes"); return; }
   if (!sound.active) {
     await toggleSound();
     if (!sound.active) return;
@@ -1553,7 +1891,7 @@ function renderStageNote() {
   let warn = false;
   if (soundLoading || (sound.state === "starting" && stage.source === "recorded" && !sound.buffersLoaded)) {
     text = "Loading the recorded organ (about 0.7 MB)…";
-  } else if (isLive()) {
+  } else if (hearsOrgan()) {
     text = "Connected to the real organ: the simulated sound is muted. Arrange the room here to plan where the pipes go.";
   } else if (sound.state === "error") {
     text = "The sound engine failed to start. See the log for details.";
@@ -1692,14 +2030,17 @@ window.addEventListener("beforeunload", (e) => {
   // Online, the browser holds the USB port: closing the tab leaves the
   // organ playing with nobody able to stop it from here.
   const organRunning = backend && backend.kind === "online" && isLive() && state.playing;
-  if (!organRunning) return;
+  const guestsHere = room && state.users.length > 1;   // closing the page closes the room
+  if (!organRunning && !guestsHere) return;
   e.preventDefault();
   e.returnValue = "";   // browser shows its own "leave site?" prompt
 });
+// Tell the room's guests right away (instead of after their connection times out).
+window.addEventListener("pagehide", () => room?.close());
 
 window.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "BUTTON", "SUMMARY"].includes(e.target.tagName)) return;
-  if (document.querySelector("dialog[open]") || state.quitting || state.role === "guest") return;
+  if (document.querySelector("dialog[open]") || state.quitting || !conducts()) return;
   if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
   if (e.key === "c" || e.key === "C") clearBtn.click();
 });
@@ -1713,12 +2054,16 @@ async function init() {
   applyTheme(document.documentElement.dataset.themePref || "auto");
   // ?debug exposes internals to the browser console (and to tests); read it
   // now, before a guest's join code is cleaned out of the address.
-  const debug = new URLSearchParams(location.search).has("debug");
+  const params = new URLSearchParams(location.search);
+  const debug = params.has("debug");
+  const roomCode = cleanCode(params.get("room"));
   buildPeers();
   buildStage();
   relayout();
   try {
-    backend = await createBackend(onBackendEvent, { askCode: askJoinCode });
+    // ?room=CODE: join someone's online room.
+    backend = isCode(roomCode) ? new RoomGuestBackend(onBackendEvent, roomCode)
+      : await createBackend(onBackendEvent, { askCode: askJoinCode });
   } catch (e) {
     if (!(e instanceof JoinError)) throw e;
     state.role = "guest";
@@ -1728,16 +2073,26 @@ async function init() {
   state.shared = !!backend.shared;
   state.role = backend.role || "host";
   document.body.dataset.mode = backend.kind;
-  $("modeName").textContent = backend.kind === "online" ? "online"
+  $("modeName").textContent = backend.kind === "room" ? `room ${roomCode}`
+    : backend.kind === "online" ? "online"
     : state.role === "guest" ? "joined" : "local app";
   $("usbWarning").hidden = backend.usbSupported || state.role === "guest";
   applyRole();
   if (state.role !== "guest") restoreWorking();   // a guest shows the shared pattern
   relayout();
   const name = state.role === "guest" ? (storedName() || await askName() || "") : storedName();
-  backend.start(name);
+  if (debug) window.organ = { state, sound, getStage: () => stage, get backend() { return backend; }, get room() { return room; } };
+  if (backend.kind === "room") {
+    modeBadge.textContent = "JOINING";
+    truthText.textContent = `Joining room ${roomCode}…`;
+  }
+  try {
+    await backend.start(name);
+  } catch (e) {
+    showClosed(`Couldn't join room ${roomCode}: ${e.message}.`);
+    return;
+  }
   refreshPorts();
   refreshPresets();
-  if (debug) window.organ = { state, sound, getStage: () => stage, backend };
 }
 init();

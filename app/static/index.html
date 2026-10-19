@@ -30,7 +30,7 @@
   <header class="topbar">
     <div class="brand">Calum Organ <span class="ver">v1.1 · <span id="modeName">…</span></span></div>
 
-    <div class="group conn host-only">
+    <div class="group conn host-only organ-only">
       <select id="portSelect" aria-label="Serial port"></select>
       <button id="refreshPorts" title="Refresh port list" aria-label="Refresh port list">↻</button>
       <button id="connectBtn" class="primary">Connect</button>
@@ -58,15 +58,15 @@
     </div>
 
     <div class="group end">
-      <button id="shareBtn" type="button" class="host-only" hidden title="Let phones and laptops join">Share…</button>
+      <button id="shareBtn" type="button" class="host-only organ-only" hidden title="Play the organ with other people">Share…</button>
       <button id="themeBtn" type="button"></button>
       <details class="menu" id="moreMenu">
         <summary>More ▾</summary>
         <div class="menu-items" role="menu">
-          <button id="playTogether" role="menuitem" class="host-only">Play together…</button>
+          <button id="playTogether" role="menuitem" class="host-only organ-only">Play together…</button>
           <button id="exportPresets" role="menuitem" class="host-only">Export presets…</button>
           <button id="importPresets" role="menuitem" class="host-only">Import presets…</button>
-          <button id="updateFirmware" role="menuitem" class="host-only">Update board firmware…</button>
+          <button id="updateFirmware" role="menuitem" class="host-only organ-only">Update board firmware…</button>
           <button id="openAbout" role="menuitem">About &amp; credits…</button>
         </div>
       </details>
@@ -87,7 +87,7 @@
     <span class="sync" id="syncText"></span>
   </div>
 
-  <!-- Who's in the shared session (local app). -->
+  <!-- Who's playing together (local app over Wi-Fi, or an online room). -->
   <div class="presence" id="presence" hidden aria-label="Who's here"></div>
 
   <main>
@@ -160,12 +160,35 @@
   <dialog id="shareDialog" class="wide share" aria-labelledby="shareTitle">
     <form method="dialog">
       <p class="confirm-title" id="shareTitle">Play together</p>
-      <div id="shareNeedsLocal">
-        <p class="confirm-body">Phones and laptops can join the laptop that's connected to
-          the organ, over the same Wi-Fi (or that laptop's hotspot). They see the organ live
-          and paint the pattern with you; the laptop keeps play/stop, tempo and presets.</p>
-        <p class="confirm-body">Sharing needs the <b>local app</b> on that laptop: double-click
-          <b>Organ.command</b>, connect the organ, then choose <b>Share…</b>.</p>
+      <div id="roomPanel">
+        <p class="confirm-body">Open a room and anyone with its link joins from their own phone
+          or computer, wherever they are. This page is the host: it runs the organ (or the demo
+          organ), and you choose what each person can do: paint everything, own one pipe, or
+          co-host. You can also make someone else the host.</p>
+        <div id="roomOff">
+          <div class="room-actions">
+            <button type="button" id="roomStart" class="accent">Open a room</button>
+            <span class="muted">or join one:</span>
+            <input id="roomJoinCode" placeholder="Room code" maxlength="8" autocomplete="off"
+                   autocapitalize="characters" spellcheck="false" aria-label="Room code">
+            <button type="button" id="roomJoin">Join</button>
+          </div>
+          <p class="muted">Everyone needs the internet. Rooms find each other through the free
+            PeerJS server; after that the browsers talk to each other directly.</p>
+        </div>
+        <div id="roomOn" hidden>
+          <div class="share-row">
+            <div class="share-qr" id="roomQr" aria-label="QR code to join the room"></div>
+            <div class="share-info">
+              <p class="share-code">Room <b id="roomCode"></b></p>
+              <p class="share-link" id="roomLink"></p>
+              <button type="button" id="roomCopy">Copy link</button>
+              <p class="muted">Click someone's name above the grid to choose what they can do,
+                or to make them the host. Keep this page open: closing it closes the room.</p>
+              <button type="button" id="roomEnd" class="danger">Close the room</button>
+            </div>
+          </div>
+        </div>
       </div>
       <div id="shareControls">
         <p class="confirm-body">Anyone on the same Wi-Fi (or this laptop's hotspot) can scan
@@ -190,6 +213,25 @@
         </div>
       </div>
       <menu><button value="close">Done</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="personDialog" class="person" aria-labelledby="personTitle">
+    <form method="dialog">
+      <p class="confirm-title" id="personTitle"></p>
+      <fieldset class="perm-choices">
+        <legend>What they can do</legend>
+        <label><input type="radio" name="perm" value="paint"> Paint every pipe</label>
+        <label><input type="radio" name="perm" value="pipe"> Own one pipe:
+          <select id="personPipe" aria-label="Their pipe"></select></label>
+        <label><input type="radio" name="perm" value="cohost"> Co-host: also play/stop, tempo,
+          pipes and steps, presets and Clear</label>
+      </fieldset>
+      <menu>
+        <button type="button" id="personRemove" class="danger">Remove</button>
+        <button type="button" id="personHost">Make host…</button>
+        <button value="close" class="accent">Done</button>
+      </menu>
     </form>
   </dialog>
 
@@ -232,6 +274,8 @@
         <li>Local app: Python with pyserial (BSD). QR codes for playing together:
           <a href="https://github.com/kazuhikoarase/qrcode-generator" target="_blank" rel="noopener">qrcode-generator</a>
           (Kazuhiko Arase, MIT).</li>
+        <li>Online rooms: <a href="https://peerjs.com/" target="_blank" rel="noopener">PeerJS</a>
+          (MIT) and its free public matchmaking server.</li>
       </ul>
 
       <p class="muted">Source:

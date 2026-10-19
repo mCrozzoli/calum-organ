@@ -22,7 +22,8 @@ says which one you're in.
 | Browser | Chrome or Edge on a computer | any |
 | Needs | internet to open the page | Python 3 (set up automatically) |
 | Presets | stored in that browser (export/import to move them) | files in `~/.calum_organ/presets/` |
-| Extras | demo organ, update board firmware | Quit button, **play together** (others join by QR code) |
+| Play together | **rooms** over the internet: anyone with the link joins | guests on the same Wi-Fi join by QR code |
+| Extras | demo organ, update board firmware | Quit button, works without internet |
 | Both | simulated sound (SuperCollider in the browser), light/dark theme | |
 
 ```
@@ -100,8 +101,45 @@ start of the next bar so the rhythm doesn't stumble.
 
 ## Playing together
 
-Phones and laptops can join the laptop that's connected to the organ and
-paint the pattern with you, live. Any number of devices, iPhones included.
+Other people can paint the pattern with you, live, from their own phone or
+computer. Everyone sees the same pattern, everyone's edits (flashed in
+their colour), the organ's real playhead and who's here.
+
+### Online: rooms
+
+1. On the computer connected to the organ, open the online version and
+   connect the organ (or the demo organ).
+2. **Play together…** → **Open a room**. A room code (e.g. `K7PQ2M`), its
+   link and a QR code appear. Send the link, or let people scan the code.
+3. Others open the link (any modern browser, iPhones included), type their
+   name and paint, wherever they are. Or they type the code under
+   **Play together… → Join**.
+
+This page is the **host**: it runs the organ and decides what each person
+can do. Click someone's name above the grid:
+
+| Role | Can |
+|---|---|
+| **Paint every pipe** (default) | paint any cell |
+| **Own one pipe** | paint only their pipe's row; the other rows are dimmed |
+| **Co-host** | also play/stop, tempo, pipes and steps, presets (their own) and Clear |
+
+**Make host…** hands the room to that person: this page lets go of the
+organ and rejoins as a co-host, and everyone follows the room to the new
+host (they keep their roles). The new host then connects the organ on
+their computer, or plays the demo organ. **Remove** takes someone out.
+Closing the host's page (or **Close the room**) ends it for everyone.
+
+Guests far away hear the simulated pipes (Listen panel), following the
+organ's playhead. Rooms find each other through the free public
+[PeerJS](https://peerjs.com/) server; after that the browsers talk to each
+other directly (WebRTC). On some strict networks (some offices and venues)
+direct connections are blocked; a phone's mobile data usually works.
+
+### Local app: Wi-Fi
+
+Phones and laptops on the same Wi-Fi can join the local app, without
+the internet. Any number of devices, iPhones included.
 
 1. On the laptop connected to the central ESP32, start the **local app**
    (double-click `Organ.command`) and connect the organ.
@@ -118,7 +156,7 @@ moment keep both their strokes: edits travel as single cells and the laptop
 merges them before sending one pattern to the organ.
 
 **The laptop (host) keeps control** of the organ connection, play/stop,
-tempo, presets and Clear. Guests can only paint, and only with the code;
+tempo, presets and Clear. Guests can only paint, and only with the code (no roles here);
 **Stop sharing** disconnects them all and invalidates the code. Guests'
 phones load the app over the local network (plain http), where browsers
 don't allow web audio, so they don't play the simulated sound; they hear
@@ -287,6 +325,7 @@ calum-organ/
 │       ├── index.html, app.css
 │       ├── js/app.js       # UI
 │       ├── js/backends.js  # local app vs online (Web Serial / demo)
+│       ├── js/room.js      # online rooms: host hub, guest backend, roles
 │       ├── js/link.js      # serial link + Web Serial transport
 │       ├── js/protocol.js  # same protocol as app/protocol.py
 │       ├── js/demo.js      # simulated organ
@@ -330,7 +369,9 @@ calum-organ/
   headphone 3D. Recorded-organ sound source (VSCO 2 CE), synth voices
   modelled on it, and an About & credits panel. Play together: guests join
   the local app by QR code over Wi-Fi and paint the shared pattern. iPhone
-  sound fix (audio unlocked in the tap, silent switch bypassed).
+  sound fix (audio unlocked in the tap, silent switch bypassed). Online
+  rooms (PeerJS): play together over the internet, with roles (paint
+  everything, own one pipe, co-host) and handing over the host.
 
 ## Credits and licences
 
@@ -348,5 +389,7 @@ with Claude AI as a co-designing agent, and the projects below.
   updater: ESP Web Tools (Apache-2.0).
 - `app/static/vendor/qrcode-generator/`: QR codes for sharing, by Kazuhiko
   Arase (MIT).
+- `app/static/vendor/peerjs/`: PeerJS 1.5.5 (MIT), and its free public
+  matchmaking server, for online rooms.
 
 This project's own code has no licence file yet.

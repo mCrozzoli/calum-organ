@@ -18,6 +18,10 @@ v1.1 has only been tested against the simulator and demo organ.
       the laptop's hotspot (some venue networks isolate devices from each
       other; the hotspot always works); macOS firewall prompt (Allow);
       latency from a phone's paint to the pipes.
+- [ ] Online rooms with real people: phones on mobile data and on the
+      venue Wi-Fi joining a room; a handover where the new host plugs the
+      sender into their laptop. If some networks block direct connections,
+      consider a TURN relay (PeerJS's public server has none).
 - [ ] Listen to the simulated pipes on headphones and on speakers: does
       the placement read as intended? Tune the pipe tone against the real
       pipes (`sound/organ_synthdefs.scd`).

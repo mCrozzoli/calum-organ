@@ -23,3 +23,12 @@ By Kazuhiko Arase, <https://github.com/kazuhikoarase/qrcode-generator>, MIT
 from the npm tarball, unmodified; tarball integrity `sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==`.
 Bundled (not loaded from a CDN) so sharing works on a venue network with no
 internet.
+
+## PeerJS 1.5.5: playing together on the web
+
+<https://peerjs.com>, MIT (`peerjs/LICENSE`). `peerjs/peerjs.min.js` is
+`dist/peerjs.min.js` from the npm tarball, unmodified; tarball integrity
+`sha512-viMUCPDL6CSfOu0ZqVcFqbWRXNHIbv2lPqNbrBIjbFYrflebOjItJ4hPfhjnuUCstqciHVu9vVJ7jFqqKi/EuQ==`.
+Browsers find each other through the free public PeerJS server
+(0.peerjs.com); after that, the session's data goes directly between them
+(WebRTC).

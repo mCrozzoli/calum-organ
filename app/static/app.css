@@ -499,6 +499,8 @@ dialog.about .muted { color: var(--muted); }
 body[data-role="guest"] .host-only { display: none !important; }
 /* until the page knows whether it's the host or a guest (a moment) */
 body[data-role="unknown"] .host-only { visibility: hidden; }
+/* a co-host (online room) runs the pattern, not the organ's USB link */
+body[data-role="cohost"] .organ-only { display: none !important; }
 .presence {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
   padding: 6px 16px; font-size: 12px; color: var(--muted);
@@ -514,6 +516,22 @@ body[data-role="unknown"] .host-only { visibility: hidden; }
   padding: 2px 10px; min-height: 0;
 }
 .presence .who .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.presence .who .tag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted);
+}
+.room-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+#roomJoinCode { width: 9em; text-transform: uppercase; letter-spacing: 2px; font-family: Menlo, monospace; }
+#roomOff .muted, #roomOn .muted { font-size: 12px; color: var(--muted); }
+#roomCopy, #roomEnd { align-self: flex-start; }
+dialog.person { width: min(420px, calc(100vw - 32px)); }
+.perm-choices { border: 0; padding: 0; margin: 0 0 12px; display: flex; flex-direction: column; gap: 10px; }
+.perm-choices legend { color: var(--muted); font-size: 12px; margin-bottom: 8px; padding: 0; }
+.perm-choices label { display: block; line-height: 1.5; padding-left: 26px; text-indent: -26px; }
+.perm-choices input[type="radio"] {
+  width: 18px; height: 18px; min-height: 0; margin: 0 8px 0 0; padding: 0;
+  vertical-align: -3px; accent-color: var(--accent);
+}
+.perm-choices select { margin-left: 4px; text-indent: 0; }
 dialog.share { width: min(560px, calc(100vw - 32px)); }
 .share-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
 .share-qr {
