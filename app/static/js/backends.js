@@ -9,21 +9,49 @@
 //                  organ so the app works with no hardware at all.
 //
 // Both emit the same events to onEvent: status, log, peer, step, transport,
-// ready (and, local only: quit, offline).
+// ready. The local app adds a shared session (app/session.py): many pages,
+// one pattern. Events: cells, pattern, organ, presence, sharing, quit,
+// offline. Its role is "host" (the laptop's own page) or "guest" (a phone or
+// laptop that joined over Wi-Fi with the code).
 
 import { validatePattern } from "./protocol.js";
 import { SerialLink, WebSerialTransport, describePort } from "./link.js";
 import { DemoTransport } from "./demo.js";
 
-export async function createBackend(onEvent) {
-  // The Python app only ever serves on this machine; don't probe from the web.
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
-  if (!local) return new OnlineBackend(onEvent);
+// askCode(): ask the person for the join code (a guest who typed the
+// address instead of scanning the QR code). Resolves to the code or null.
+export async function createBackend(onEvent, { askCode = async () => null } = {}) {
+  // The local app (and its guest listener) is plain http; the online
+  // version is https. Only probe for the app where it can be.
+  if (location.protocol !== "http:") return new OnlineBackend(onEvent);
   try {
-    const r = await fetch("api/status", { cache: "no-store" });
-    if (r.ok && (await r.json()).type === "status") return new LocalBackend(onEvent);
-  } catch (_) { /* no server: static hosting */ }
+    let r = await fetch("api/status", { cache: "no-store" });
+    if (r.status === 401) {                      // a guest without the code yet
+      let code = new URLSearchParams(location.search).get("join");
+      for (let tries = 0; tries < 3 && r.status === 401; tries++) {
+        if (!code) code = await askCode(tries > 0);
+        if (!code) break;
+        await fetch(`api/join?code=${encodeURIComponent(code)}`, { cache: "no-store" });
+        r = await fetch("api/status", { cache: "no-store" });
+        code = null;
+      }
+      // keep the code out of the address bar (and out of shared links)
+      history.replaceState(null, "", location.pathname);
+    }
+    if (r.ok) {
+      const snap = await r.json();
+      if (snap.type === "status") return new LocalBackend(onEvent, snap.role || "host");
+    }
+    if (r.status === 401) throw new JoinError();
+  } catch (e) {
+    if (e instanceof JoinError) throw e;
+    /* no server: static hosting */
+  }
   return new OnlineBackend(onEvent);
+}
+
+export class JoinError extends Error {
+  constructor() { super("join code needed"); }
 }
 
 async function api(path, options = {}) {
@@ -40,19 +68,34 @@ async function api(path, options = {}) {
 
 // ---------------------------------------------------------------------------
 export class LocalBackend {
-  constructor(onEvent) {
+  constructor(onEvent, role = "host") {
     this.onEvent = onEvent;
     this.kind = "local";
-    this.canQuit = true;
-    this.canEnterPath = true;      // "Other port…" asks for a /dev path
+    this.shared = true;            // one pattern, edited by everyone connected
+    this.role = role;
+    this.canQuit = role === "host";
+    this.canEnterPath = role === "host";   // "Other port…" asks for a /dev path
     this.usbSupported = true;
     this._stopped = false;
+    this._es = null;
+    this.name = "";
   }
 
-  start() { this._listen(); }
+  start(name = "") {
+    this.name = name;
+    this._listen();
+  }
+
+  // A new name shows up for everyone once the event stream reconnects.
+  rename(name) {
+    this.name = name;
+    this._es?.close();
+    this._listen();
+  }
 
   _listen() {
-    const es = new EventSource("api/events");
+    const es = new EventSource(`api/events?name=${encodeURIComponent(this.name)}`);
+    this._es = es;
     es.onmessage = (m) => {
       let ev;
       try { ev = JSON.parse(m.data); } catch { return; }
@@ -60,9 +103,9 @@ export class LocalBackend {
     };
     es.onerror = () => {
       es.close();
-      if (this._stopped) return;
+      if (this._stopped || this._es !== es) return;
       this.onEvent({ type: "offline" });
-      setTimeout(() => this._listen(), 1500);
+      setTimeout(() => { if (this._es === es) this._listen(); }, 1500);
     };
   }
 
@@ -81,11 +124,15 @@ export class LocalBackend {
   connect(id) { return api("api/connect", { method: "POST", body: { port: id } }); }
   disconnect() { return api("api/disconnect", { method: "POST" }); }
 
-  async sendPattern(tempo, grid) {
-    const r = await api("api/pattern", { method: "POST", body: { tempo, grid } });
-    const seq = parseInt(String(r.detail).split(" ")[1], 10);
-    return Number.isNaN(seq) ? null : seq;
+  // Shared session: painting is sent as cells, so simultaneous painters
+  // don't overwrite each other; the host replaces the whole pattern for
+  // settings, presets and Clear. The server sends the result to the organ.
+  sendCells(cells, by) { return api("api/session/cells", { method: "POST", body: { cells, by } }); }
+  replacePattern(tempo, grid, by) {
+    return api("api/session/pattern", { method: "POST", body: { tempo, grid, by } });
   }
+  shareInfo() { return api("api/share"); }
+  share(on) { return api("api/share", { method: "POST", body: { on } }); }
   play() { return api("api/play", { method: "POST" }); }
   stop() { return api("api/stop", { method: "POST" }); }
 

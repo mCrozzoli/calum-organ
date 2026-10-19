@@ -12,7 +12,7 @@
 //   - Not connected: a local timer animates a clearly labelled PREVIEW.
 //   - Demo organ: labelled DEMO and drawn like the preview; nothing real moves.
 
-import { createBackend } from "./backends.js";
+import { createBackend, JoinError } from "./backends.js";
 import { validatePattern } from "./protocol.js";
 import { OrganSound } from "./sound.js";
 import { SOURCES } from "./corpus.js";
@@ -46,6 +46,14 @@ const state = {
   presetName: "",       // preset the screen was loaded from / saved as
   savedKey: null,       // patternKey() at last save/load; null = never saved
   quitting: false,
+  // shared session (local app): one pattern, many pages
+  shared: false,
+  role: "host",          // "host" (the laptop) or "guest" (joined over Wi-Fi)
+  rev: null,             // the session revision this page shows
+  you: null,             // this page's connection id
+  users: [],             // who's connected: {id, name, role, colour}
+  sharing: { on: false },
+  flashes: new Map(),    // "i,j" -> {colour, until}: someone else just painted it
 };
 
 function makeGrid(rows, cols) {
@@ -244,6 +252,18 @@ function drawGrid() {
     }
   }
 
+  // Someone else just painted these: outline them in their colour.
+  const now = performance.now();
+  ctx.lineWidth = 2;
+  for (const [key, f] of state.flashes) {
+    if (f.until < now) { state.flashes.delete(key); continue; }
+    const [i, j] = key.split(",").map(Number);
+    if (i >= state.rows || j >= state.cols) continue;
+    ctx.strokeStyle = f.colour;
+    ctx.strokeRect(colX(j) + 1, rowY(i) + 1, cell - 2, cellH - 2);
+  }
+  ctx.lineWidth = 1;
+
   if (state.playhead >= 0 && state.playhead < state.cols) {
     const x = colX(state.playhead);
     const live = isLive();
@@ -276,6 +296,7 @@ function cellAt(evt) {
 // interpolated so a fast drag fills every cell it crosses.
 let painting = null;
 let lastCell = null;
+let paintedCells = [];   // [row, col, value] changed by the current gesture
 
 function paintLine(from, to) {
   const [i0, j0] = from;
@@ -285,17 +306,36 @@ function paintLine(from, to) {
   for (let k = 1; k <= n; k++) {
     const i = Math.round(i0 + ((i1 - i0) * k) / n);
     const j = Math.round(j0 + ((j1 - j0) * k) / n);
-    if (state.grid[i][j] !== painting) { state.grid[i][j] = painting; changed = true; }
+    if (state.grid[i][j] !== painting) {
+      state.grid[i][j] = painting;
+      paintedCells.push([i, j, painting]);
+      changed = true;
+    }
   }
   return changed;
 }
 
+// After painting: shared session -> send just the painted cells.
 function onGridChanged() {
+  redrawPattern();
+  if (state.shared) queueCells(paintedCells);
+  else schedulePatternSend();
+  paintedCells = [];
+}
+
+// After a whole-pattern change (settings, preset, Clear): the host replaces
+// the shared pattern; on its own, the page sends the pattern to the organ.
+function commitWhole() {
+  redrawPattern();
+  if (state.shared) scheduleReplace();
+  else schedulePatternSend();
+}
+
+function redrawPattern() {
   drawGrid();
   renderPeers();
   renderPresetState();
   persistWorking();
-  schedulePatternSend();
 }
 
 canvas.addEventListener("pointerdown", (e) => {
@@ -304,6 +344,7 @@ canvas.addEventListener("pointerdown", (e) => {
   canvas.setPointerCapture(e.pointerId);
   painting = e.button === 2 ? 0 : 1 - state.grid[c[0]][c[1]];
   state.grid[c[0]][c[1]] = painting;
+  paintedCells.push([c[0], c[1], painting]);
   lastCell = c;
   onGridChanged();
 });
@@ -415,6 +456,16 @@ function renderTruth() {
     cls = "stopped";
     text = `Connected to ${state.port}. The organ is silent.`;
   }
+  if (state.role === "guest") {
+    if (!state.connected) {
+      mode = "WAITING";
+      cls = "stopped";
+      text = "The host hasn't connected the organ yet. Paint away: the pattern goes to the organ when they do.";
+    } else {
+      text = state.playing ? "The organ is playing this pattern. Paint to change it; the host runs play and tempo."
+                           : "Connected to the organ. Paint the pattern; the host starts and stops it.";
+    }
+  }
   modeBadge.textContent = mode;
   truthBar.className = `truth ${cls}`;
   truthText.textContent = text;
@@ -461,6 +512,7 @@ logWrap.addEventListener("toggle", () => {
 
 // ---------------------------------------------------------------- ports
 async function refreshPorts() {
+  if (state.role === "guest") return;
   if (state.connected) { showConnectedPort(); return; }
   try {
     const previous = portSelect.value;
@@ -562,18 +614,76 @@ function flushPattern() {
   return sendChain;
 }
 
+// ---------------------------------------------------------------- shared session
+// Painting is sent as cells (two people painting at once keep both their
+// strokes); the host's settings, presets and Clear replace the pattern. The
+// server merges everything and sends it to the organ.
+let cellQueue = [];
+let cellTimer = null;
+function queueCells(cells) {
+  if (!cells.length) return;
+  cellQueue.push(...cells);
+  clearTimeout(cellTimer);
+  cellTimer = setTimeout(sendQueuedCells, 40);
+}
+async function sendQueuedCells() {
+  const cells = cellQueue;
+  cellQueue = [];
+  for (let k = 0; k < cells.length; k += 256) {
+    try {
+      await backend.sendCells(cells.slice(k, k + 256), state.you);
+    } catch (e) {
+      toast("Your edit wasn't shared: " + e.message, "err");
+    }
+  }
+}
+
+let replaceTimer = null;
+function scheduleReplace() {
+  if (state.role !== "host") return;
+  clearTimeout(replaceTimer);
+  replaceTimer = setTimeout(async () => {
+    try {
+      await backend.replacePattern(state.tempo, state.grid.map((row) => row.slice()), state.you);
+    } catch (e) {
+      toast("Change not shared: " + e.message, "err");
+    }
+  }, SEND_DEBOUNCE_MS);
+}
+
+const colourOf = (id) => state.users.find((u) => u.id === id)?.colour;
+
+function applyCells(ev) {
+  const until = performance.now() + 900;
+  const colour = ev.by !== state.you ? colourOf(ev.by) : null;
+  for (const [i, j, v] of ev.cells) {
+    if (i >= state.rows || j >= state.cols) continue;
+    state.grid[i][j] = v;
+    if (colour) state.flashes.set(`${i},${j}`, { colour, until });
+  }
+  state.rev = Math.max(state.rev ?? 0, ev.rev);
+  redrawPattern();
+  if (colour) setTimeout(drawGrid, 950);
+}
+
+function applyPattern(ev) {
+  adoptPattern(ev.tempo, ev.grid);
+  state.rev = ev.rev;
+  persistWorking();
+}
+
 // ---------------------------------------------------------------- transport
 async function play() {
   if (!state.connected) { startPreview(); return; }
   state.transportBusy = true;
   renderTruth();
   try {
-    if (state.dirty || state.sentSeq === null) {
+    if (!state.shared && (state.dirty || state.sentSeq === null)) {
       state.dirty = true;
       await flushPattern();
       if (state.sendError) return;
     }
-    await backend.play();
+    await backend.play();             // shared: the server sends the latest edits first
   } catch (e) {
     toast("Play failed: " + e.message, "err");
   } finally {
@@ -661,6 +771,7 @@ function restoreWorking() {
 const PRESET_RE = /^[\w][\w \-.]{0,63}$/;
 
 async function refreshPresets() {
+  if (state.role === "guest") return [];
   try {
     const names = await backend.presets.list();
     presetSelect.innerHTML = "";
@@ -698,8 +809,7 @@ async function loadPreset(name) {
     const p = await backend.presets.load(name);
     adoptPattern(p.tempo, p.grid);
     markSaved(name);
-    persistWorking();
-    schedulePatternSend();
+    commitWhole();
     renderTruth();
     toast(`Loaded “${name}”`);
   } catch (e) {
@@ -860,7 +970,33 @@ async function openFirmwareDialog() {
 }
 
 // ---------------------------------------------------------------- backend events
+// The local app's snapshot (first connection, or the event stream
+// reconnecting): the shared pattern, the organ's state, who's here.
+function onSessionSnapshot(ev) {
+  state.role = ev.role || "host";
+  state.you = ev.you || state.you;
+  state.users = ev.users || [];
+  if (ev.sharing) state.sharing = ev.sharing;
+  applyRole();
+  const s = ev.session;
+  if (state.role === "host" && s.rev === 0) {
+    // The app has no pattern yet (just started, or restarted while this page
+    // stayed open): offer this page's rather than wiping it with a blank one.
+    state.rev = 0;
+    scheduleReplace();
+  } else if (s.rev !== state.rev) {
+    applyPattern(s);
+  }
+  state.sentSeq = ev.organ?.seq ?? null;
+  state.sendError = ev.organ?.error ?? null;
+  state.sending = !!ev.organ?.pending;
+  state.peers = freshPeers();
+  Object.entries(ev.peers || {}).forEach(([i, p]) => { state.peers[+i] = p; });
+  renderPresence();
+}
+
 function onStatus(ev) {
+  if (ev.session) onSessionSnapshot(ev);
   const was = state.connected;
   state.connected = !!ev.connected;
   state.demo = !!ev.demo;
@@ -874,17 +1010,11 @@ function onStatus(ev) {
     state.peers = freshPeers();
     state.sentSeq = null;
     state.playing = !!ev.playing;
-    if (ev.pattern) {
-      // Organ already has a pattern (page reloaded / second tab): show it,
-      // don't overwrite it.
-      adoptPattern(ev.pattern.tempo, ev.pattern.grid);
-      state.presetName = "";
-      state.savedKey = null;        // unknown whether it was saved
-      refreshPresets();
-      state.sentSeq = ev.pattern.seq;
+    if (ev.session) {
+      // Shared session: the organ gets the shared pattern from the server.
+      state.sentSeq = ev.organ?.seq ?? null;
       Object.entries(ev.peers || {}).forEach(([i, p]) => { state.peers[+i] = p; });
-      state.dirty = false;
-    } else {
+    } else if (!state.shared) {
       schedulePatternSend();    // fresh connection: the organ gets what's on screen
     }
   }
@@ -922,7 +1052,25 @@ function onBackendEvent(ev) {
         state.sentSeq = null;
         state.peers = freshPeers();
         setPlayhead(-1);
-        schedulePatternSend();
+        if (!state.shared) schedulePatternSend();   // shared: the server resends
+        break;
+      case "cells": applyCells(ev); break;
+      case "pattern": applyPattern(ev); break;
+      case "organ":
+        state.sending = ev.state === "sending";
+        if (ev.state === "sent") { state.sentSeq = ev.seq; state.sendError = null; }
+        if (ev.state === "error") state.sendError = ev.error;
+        renderTruth();
+        renderPeers();
+        break;
+      case "presence":
+        state.users = ev.users;
+        renderPresence();
+        break;
+      case "sharing":
+        state.sharing = { ...state.sharing, on: ev.on };
+        renderPresence();
+        if ($("shareDialog").open) renderShareDialog();
         break;
       case "quit":
         showClosed();
@@ -931,6 +1079,10 @@ function onBackendEvent(ev) {
         refreshPorts();
         break;
       case "offline":
+        if (state.role === "guest") {
+          showClosed("The host stopped sharing, or the laptop is out of reach.");
+          break;
+        }
         truthBar.className = "truth warn";
         modeBadge.textContent = "OFFLINE";
         truthText.textContent = "Lost contact with the Organ app. Is the Terminal window still open? Reconnecting…";
@@ -945,10 +1097,158 @@ function onBackendEvent(ev) {
     }
 }
 
+// ---------------------------------------------------------------- playing together
+// The local app can share its session: phones and laptops on the same Wi-Fi
+// join with a QR code. Guests paint; the host keeps the organ, play/stop,
+// tempo and presets.
+function applyRole() {
+  const guest = state.role === "guest";
+  document.body.dataset.role = state.role;
+  for (const el of [rowsInput, colsInput, tempoInput]) el.disabled = guest;
+  $("stageWrap").hidden = guest;        // simulated sound needs the host's secure page
+  logWrap.hidden = guest;
+  quitBtn.hidden = guest || !backend?.canQuit;
+  $("shareBtn").hidden = !(state.shared && !guest);
+  $("gridHint").textContent = guest
+    ? "Tap or drag to paint · drag from a lit cell to erase. Everyone here sees your changes."
+    : "Click or drag to paint · drag from a lit cell to erase · Space = play/stop · C = clear";
+  renderPresence();
+}
+
+function renderPresence() {
+  const el = $("presence");
+  const show = state.shared && (state.users.length > 1 || state.sharing.on || state.role === "guest");
+  el.hidden = !show;
+  if (!show) return;
+  el.innerHTML = "";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = `${state.users.length} here:`;
+  el.appendChild(label);
+  for (const u of state.users) {
+    const mine = u.id === state.you;
+    const chip = document.createElement(mine ? "button" : "span");
+    chip.className = "who";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = u.colour;      // the person's colour, also used for their edits
+    chip.append(dot, `${u.name}${u.role === "host" && !mine ? " (host)" : ""}${mine ? " (you)" : ""}`);
+    if (mine) {
+      chip.type = "button";
+      chip.title = "Change your name";
+      chip.addEventListener("click", renameMe);
+    }
+    el.appendChild(chip);
+  }
+  if (state.role === "host" && state.sharing.on) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "link";
+    b.textContent = `Sharing · code ${state.sharing.code}`;
+    b.addEventListener("click", openShareDialog);
+    el.appendChild(b);
+  }
+}
+
+const NAME_KEY = "calumOrgan.name";
+function storedName() {
+  try { return localStorage.getItem(NAME_KEY) || ""; } catch (_) { return ""; }
+}
+async function askName(current = "") {
+  const name = await askText({
+    label: "Your name (others in the session see it)",
+    value: current,
+    placeholder: "e.g. Ana",
+    validate: (v) => (v.length > 24 ? "24 characters at most" : null),
+  });
+  if (name) { try { localStorage.setItem(NAME_KEY, name); } catch (_) {} }
+  return name;
+}
+async function renameMe() {
+  const name = await askName(storedName());
+  if (name) backend.rename(name);
+}
+function askJoinCode(wrongBefore) {
+  return askText({
+    label: wrongBefore ? "That code didn't work. Join code (on the host's screen):"
+                       : "Join code (4 digits, on the host's screen):",
+    placeholder: "1234",
+    validate: (v) => (/^\d{4}$/.test(v) ? null : "4 digits"),
+  });
+}
+
+async function openShareDialog() {
+  moreMenu.open = false;
+  const host = state.shared && state.role === "host";
+  $("shareNeedsLocal").hidden = host;
+  $("shareControls").hidden = !host;
+  if (host) {
+    try { state.sharing = await backend.shareInfo(); } catch (_) {}
+    await renderShareDialog();
+  }
+  $("shareDialog").showModal();
+}
+
+async function renderShareDialog() {
+  const on = !!state.sharing.on;
+  $("shareOff").hidden = on;
+  $("shareOn").hidden = !on;
+  if (!on) return;
+  const sel = $("shareUrl");
+  const previous = sel.value;
+  sel.innerHTML = "";
+  for (const url of state.sharing.urls || []) sel.add(new Option(new URL(url).host, url));
+  if ([...sel.options].some((o) => o.value === previous)) sel.value = previous;
+  $("shareCode").textContent = state.sharing.code;
+  $("shareLink").textContent = sel.value;
+  if (!sel.value) {
+    $("shareQr").textContent = "No network found: connect this laptop to Wi-Fi or turn on its hotspot.";
+    return;
+  }
+  const { default: qrcode } = await import("../vendor/qrcode-generator/qrcode.mjs");
+  const qr = qrcode(0, "M");
+  qr.addData(sel.value);
+  qr.make();
+  $("shareQr").innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
+}
+
+$("shareUrl").addEventListener("change", renderShareDialog);
+$("shareStart").addEventListener("click", async () => {
+  try {
+    state.sharing = await backend.share(true);
+  } catch (e) { toast("Couldn't start sharing: " + e.message, "err"); return; }
+  await renderShareDialog();
+  renderPresence();
+});
+$("shareStop").addEventListener("click", async () => {
+  const others = state.users.filter((u) => u.role === "guest").length;
+  if (others) {
+    const go = await askConfirm({
+      title: "Stop sharing?",
+      body: `${others} ${others > 1 ? "people are" : "person is"} connected; they'll be disconnected.`,
+      ok: "Stop sharing",
+      danger: true,
+    });
+    if (!go) return;
+  }
+  try {
+    state.sharing = await backend.share(false);
+  } catch (e) { toast("Couldn't stop sharing: " + e.message, "err"); return; }
+  await renderShareDialog();
+  renderPresence();
+});
+$("playTogether").addEventListener("click", openShareDialog);
+$("shareBtn").addEventListener("click", openShareDialog);
+
 // ---------------------------------------------------------------- quit
-function showClosed() {
+function showClosed(why) {
   state.quitting = true;
   stopPreview();
+  if (state.role === "guest") {
+    $("closedTitle").textContent = "The session has ended";
+    $("closedBody").textContent = why || "The host closed Calum Organ. Thanks for playing!";
+    $("closedHint").textContent = "Scan the host's QR code again to rejoin.";
+  }
   $("closedScreen").hidden = false;
   document.title = "Calum Organ (closed)";
 }
@@ -1258,8 +1558,11 @@ function renderStageNote() {
   } else if (sound.state === "error") {
     text = "The sound engine failed to start. See the log for details.";
     warn = true;
+  } else if (sound.state !== "on" && !window.isSecureContext) {
+    text = "Simulated sound needs a secure page: open the online version (or this laptop's own app) to hear it.";
   } else if (sound.state !== "on") {
-    text = "Hear the demo organ (or the preview) as simulated pipes. Best with headphones.";
+    text = "Hear the demo organ (or the preview) as simulated pipes. Best with headphones."
+      + (/iPhone|iPad|iPod/.test(navigator.userAgent) ? " On iPhone, also check the volume buttons." : "");
   } else if (sound.latencyMs > 60) {
     text = `Sound on. Your audio output adds ${sound.latencyMs} ms delay (Bluetooth?): wired headphones keep it in time.`;
     warn = true;
@@ -1340,8 +1643,7 @@ function setRowsCols(rows, cols) {
   state.grid = newGrid;
   if (state.playhead >= cols) state.playhead = -1;
   relayout();
-  persistWorking();
-  schedulePatternSend();
+  commitWhole();
 }
 
 function readNumber(input, lo, hi, fallback) {
@@ -1356,8 +1658,7 @@ colsInput.addEventListener("change", () => setRowsCols(state.rows, readNumber(co
 tempoInput.addEventListener("change", () => {
   state.tempo = readNumber(tempoInput, 20, 300, state.tempo);
   if (previewTimer) startPreview();
-  persistWorking();
-  schedulePatternSend();
+  commitWhole();
 });
 
 connectBtn.addEventListener("click", toggleConnect);
@@ -1365,7 +1666,7 @@ refreshPortsBtn.addEventListener("click", refreshPorts);
 playBtn.addEventListener("click", () => (state.playing ? stop() : play()));
 clearBtn.addEventListener("click", () => {
   state.grid = makeGrid(state.rows, state.cols);
-  onGridChanged();
+  commitWhole();
 });
 presetSelect.addEventListener("change", () => loadPreset(presetSelect.value));
 savePresetBtn.addEventListener("click", savePreset);
@@ -1398,30 +1699,45 @@ window.addEventListener("beforeunload", (e) => {
 
 window.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "BUTTON", "SUMMARY"].includes(e.target.tagName)) return;
-  if (document.querySelector("dialog[open]") || state.quitting) return;
+  if (document.querySelector("dialog[open]") || state.quitting || state.role === "guest") return;
   if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
   if (e.key === "c" || e.key === "C") clearBtn.click();
 });
 window.addEventListener("resize", relayout);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") sound.wake();
+});
 
 // ---------------------------------------------------------------- init
 async function init() {
   applyTheme(document.documentElement.dataset.themePref || "auto");
+  // ?debug exposes internals to the browser console (and to tests); read it
+  // now, before a guest's join code is cleaned out of the address.
+  const debug = new URLSearchParams(location.search).has("debug");
   buildPeers();
   buildStage();
-  restoreWorking();
   relayout();
-  backend = await createBackend(onBackendEvent);
+  try {
+    backend = await createBackend(onBackendEvent, { askCode: askJoinCode });
+  } catch (e) {
+    if (!(e instanceof JoinError)) throw e;
+    state.role = "guest";
+    showClosed("This is a shared Calum Organ session. Ask the host for the join code (or scan their QR code), then reload this page.");
+    return;
+  }
+  state.shared = !!backend.shared;
+  state.role = backend.role || "host";
   document.body.dataset.mode = backend.kind;
-  $("modeName").textContent = backend.kind === "online" ? "online" : "local app";
-  quitBtn.hidden = !backend.canQuit;
-  $("usbWarning").hidden = backend.usbSupported;
-  backend.start();
+  $("modeName").textContent = backend.kind === "online" ? "online"
+    : state.role === "guest" ? "joined" : "local app";
+  $("usbWarning").hidden = backend.usbSupported || state.role === "guest";
+  applyRole();
+  if (state.role !== "guest") restoreWorking();   // a guest shows the shared pattern
+  relayout();
+  const name = state.role === "guest" ? (storedName() || await askName() || "") : storedName();
+  backend.start(name);
   refreshPorts();
   refreshPresets();
-  // ?debug exposes internals to the browser console (and to tests).
-  if (new URLSearchParams(location.search).has("debug")) {
-    window.organ = { state, sound, getStage: () => stage, backend };
-  }
+  if (debug) window.organ = { state, sound, getStage: () => stage, backend };
 }
 init();

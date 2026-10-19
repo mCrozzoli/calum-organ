@@ -15,3 +15,11 @@ registry). Same version and files as the Dark Sonification web designs.
 
 **Pinned on purpose:** from 0.80.0 SuperSonic is AGPL-3.0. Review the
 licence before upgrading.
+
+## qrcode-generator 2.0.4: the QR code in the Share dialog
+
+By Kazuhiko Arase, <https://github.com/kazuhikoarase/qrcode-generator>, MIT
+(licence in the file header). `qrcode-generator/qrcode.mjs` is `dist/qrcode.mjs`
+from the npm tarball, unmodified; tarball integrity `sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==`.
+Bundled (not loaded from a CDN) so sharing works on a venue network with no
+internet.

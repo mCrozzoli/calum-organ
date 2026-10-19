@@ -26,19 +26,19 @@
   </script>
   <link rel="stylesheet" href="app.css">
 </head>
-<body>
+<body data-role="unknown">
   <header class="topbar">
     <div class="brand">Calum Organ <span class="ver">v1.1 · <span id="modeName">…</span></span></div>
 
-    <div class="group conn">
+    <div class="group conn host-only">
       <select id="portSelect" aria-label="Serial port"></select>
       <button id="refreshPorts" title="Refresh port list" aria-label="Refresh port list">↻</button>
       <button id="connectBtn" class="primary">Connect</button>
     </div>
 
     <div class="group transport">
-      <button id="playBtn" class="accent" aria-pressed="false">▶ Play</button>
-      <button id="clearBtn">Clear</button>
+      <button id="playBtn" class="accent host-only" aria-pressed="false">▶ Play</button>
+      <button id="clearBtn" class="host-only">Clear</button>
     </div>
 
     <div class="group settings">
@@ -51,20 +51,22 @@
       <span class="unit" title="Steps per minute">steps/min</span>
     </div>
 
-    <div class="group presets">
+    <div class="group presets host-only">
       <select id="presetSelect" aria-label="Preset"></select>
       <button id="savePreset" title="Save the current pattern">Save…</button>
       <button id="deletePreset" title="Delete the selected preset" disabled>Delete</button>
     </div>
 
     <div class="group end">
+      <button id="shareBtn" type="button" class="host-only" hidden title="Let phones and laptops join">Share…</button>
       <button id="themeBtn" type="button"></button>
       <details class="menu" id="moreMenu">
         <summary>More ▾</summary>
         <div class="menu-items" role="menu">
-          <button id="exportPresets" role="menuitem">Export presets…</button>
-          <button id="importPresets" role="menuitem">Import presets…</button>
-          <button id="updateFirmware" role="menuitem">Update board firmware…</button>
+          <button id="playTogether" role="menuitem" class="host-only">Play together…</button>
+          <button id="exportPresets" role="menuitem" class="host-only">Export presets…</button>
+          <button id="importPresets" role="menuitem" class="host-only">Import presets…</button>
+          <button id="updateFirmware" role="menuitem" class="host-only">Update board firmware…</button>
           <button id="openAbout" role="menuitem">About &amp; credits…</button>
         </div>
       </details>
@@ -85,10 +87,13 @@
     <span class="sync" id="syncText"></span>
   </div>
 
+  <!-- Who's in the shared session (local app). -->
+  <div class="presence" id="presence" hidden aria-label="Who's here"></div>
+
   <main>
     <section class="grid-wrap" id="gridWrap">
       <canvas id="grid" aria-label="Pattern grid: rows are pipes, columns are steps"></canvas>
-      <p class="hint">Click or drag to paint · drag from a lit cell to erase · Space = play/stop · C = clear</p>
+      <p class="hint" id="gridHint">Click or drag to paint · drag from a lit cell to erase · Space = play/stop · C = clear</p>
     </section>
 
     <section class="peers" id="peers" aria-label="Pipes"></section>
@@ -152,6 +157,42 @@
 
   <div class="toasts" id="toasts" aria-live="assertive"></div>
 
+  <dialog id="shareDialog" class="wide share" aria-labelledby="shareTitle">
+    <form method="dialog">
+      <p class="confirm-title" id="shareTitle">Play together</p>
+      <div id="shareNeedsLocal">
+        <p class="confirm-body">Phones and laptops can join the laptop that's connected to
+          the organ, over the same Wi-Fi (or that laptop's hotspot). They see the organ live
+          and paint the pattern with you; the laptop keeps play/stop, tempo and presets.</p>
+        <p class="confirm-body">Sharing needs the <b>local app</b> on that laptop: double-click
+          <b>Organ.command</b>, connect the organ, then choose <b>Share…</b>.</p>
+      </div>
+      <div id="shareControls">
+        <p class="confirm-body">Anyone on the same Wi-Fi (or this laptop's hotspot) can scan
+          this to join. They see the organ live and paint the pattern with you; you keep
+          play/stop, tempo, presets and the organ.</p>
+        <div id="shareOff">
+          <button type="button" id="shareStart" class="accent">Start sharing</button>
+        </div>
+        <div id="shareOn" hidden>
+          <div class="share-row">
+            <div class="share-qr" id="shareQr" aria-label="QR code to join"></div>
+            <div class="share-info">
+              <p class="share-code">Join code <b id="shareCode"></b></p>
+              <label class="ctl">Address
+                <select id="shareUrl" aria-label="Network address in the QR code"></select></label>
+              <p class="share-link" id="shareLink"></p>
+              <p class="muted">Pick the network the phones are on. If this Mac asks whether
+                Python may accept incoming connections, choose <b>Allow</b>.</p>
+              <button type="button" id="shareStop" class="danger">Stop sharing</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <menu><button value="close">Done</button></menu>
+    </form>
+  </dialog>
+
   <dialog id="aboutDialog" class="wide about" aria-labelledby="aboutTitle">
     <form method="dialog">
       <h2 id="aboutTitle">Calum Organ <span class="ver">v1.1</span></h2>
@@ -188,7 +229,9 @@
         <li>Firmware updates in the browser:
           <a href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noopener">ESP Web Tools</a>
           (ESPHome, Apache-2.0).</li>
-        <li>Local app: Python with pyserial (BSD).</li>
+        <li>Local app: Python with pyserial (BSD). QR codes for playing together:
+          <a href="https://github.com/kazuhikoarase/qrcode-generator" target="_blank" rel="noopener">qrcode-generator</a>
+          (Kazuhiko Arase, MIT).</li>
       </ul>
 
       <p class="muted">Source:
@@ -237,9 +280,9 @@
   <!-- Shown after Quit: the app (server) is gone. -->
   <div class="closed-screen" id="closedScreen" hidden>
     <div>
-      <h1>Calum Organ has quit</h1>
-      <p>The organ was stopped. You can close this tab.</p>
-      <p class="muted">To start again, double-click <b>Organ.command</b>.</p>
+      <h1 id="closedTitle">Calum Organ has quit</h1>
+      <p id="closedBody">The organ was stopped. You can close this tab.</p>
+      <p class="muted" id="closedHint">To start again, double-click <b>Organ.command</b>.</p>
     </div>
   </div>
 

@@ -28,6 +28,50 @@ const KINDS = {
   open: { def: "organPipe", amp: 0.2, reverb: 1 },
 };
 
+// Phones only allow audio that starts inside the tap itself, and iPhones
+// route web audio like a ringtone (muted by the silent switch) unless the
+// page asks for "playback". So the AudioContext is created and unlocked
+// synchronously in the tap, before anything loads, and handed to SuperSonic.
+function unlockAudio() {
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = "playback";   // iOS 17+
+  } catch (_) { /* not supported */ }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC({ latencyHint: "interactive" });
+  ctx.resume?.();
+  const blank = ctx.createBufferSource();          // the classic iOS unlock
+  blank.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+  blank.connect(ctx.destination);
+  blank.start(0);
+  return ctx;
+}
+
+// Older iPhones (no Audio Session API): a looping silent <audio> element
+// switches the page to "playback", so the silent switch no longer mutes us.
+let silentMedia = null;
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);   // iPadOS
+function holdMediaSession(on) {
+  if (!IOS || navigator.audioSession) return;
+  if (!silentMedia) {
+    const rate = 8000, frames = 4000;                 // 0.5 s of silence, 8-bit WAV
+    const b = new Uint8Array(44 + frames);
+    const v = new DataView(b.buffer);
+    const tag = (o, t) => [...t].forEach((c, i) => { b[o + i] = c.charCodeAt(0); });
+    tag(0, "RIFF"); v.setUint32(4, 36 + frames, true); tag(8, "WAVEfmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true);
+    v.setUint16(34, 8, true); tag(36, "data"); v.setUint32(40, frames, true);
+    b.fill(128, 44);
+    silentMedia = Object.assign(document.createElement("audio"), {
+      src: URL.createObjectURL(new Blob([b], { type: "audio/wav" })), loop: true,
+    });
+    silentMedia.setAttribute("playsinline", "");
+  }
+  if (on) silentMedia.play().catch(() => {});
+  else silentMedia.pause();
+}
+
 export class OrganSound {
   constructor({ onLog = () => {}, onState = () => {} } = {}) {
     this.onLog = onLog;
@@ -53,9 +97,13 @@ export class OrganSound {
     this.onState(s, detail);
   }
 
-  // Must be called from a click (browsers only start audio after a gesture).
+  // Must be called straight from a tap or click: everything before the
+  // first `await` runs inside the gesture, which is what unlocks audio.
   async start(stage) {
     if (this.state === "on" || this.state === "starting") return;
+    holdMediaSession(true);
+    if (!this.sonic) this.ctx = this.ctx || unlockAudio();
+    else this.sonic.audioContext?.resume();
     this._setState("starting");
     try {
       if (this.sonic && !(await this.sonic.resume())) {
@@ -64,11 +112,20 @@ export class OrganSound {
         this.sonic = null;
         this.source = null;
         this.buffersLoaded = false;
+        this.ctx = null;           // destroy() closed it; a new one needs a new tap
+        throw new Error("the sound engine was reset by the browser: tap Sound on again");
       }
       if (!this.sonic) await this._boot();
       await this._useSource(stage.source || DEFAULT_SOURCE);
       this.applyStage(stage);
       this.latencyMs = Math.round((this.sonic.audioContext?.outputLatency || 0) * 1000);
+      if (this.sonic.audioContext?.state !== "running") {
+        // The browser still holds audio back (seen on phones): one more tap.
+        await this.sonic.audioContext?.resume().catch(() => {});
+      }
+      if (this.sonic.audioContext?.state !== "running") {
+        throw new Error("the browser blocked audio: tap Sound on again");
+      }
       this._setState("on");
       this._sync();
     } catch (e) {
@@ -83,6 +140,7 @@ export class OrganSound {
     const sonic = new SuperSonic({
       baseURL: `${root}vendor/supersonic/`,
       coreBaseURL: `${root}vendor/supersonic-core/`,
+      audioContext: this.ctx,          // created and unlocked in the tap
     });
     // scsynth's own messages: only problems go to the app log.
     sonic.on("debug", (m) => {
@@ -191,7 +249,10 @@ export class OrganSound {
     this._setState("off");
     // Let the valves' release ring out, then stop the audio thread.
     await new Promise((r) => setTimeout(r, 200));
-    if (this.state === "off") await this.sonic.suspend();
+    if (this.state === "off") {
+      await this.sonic.suspend();
+      holdMediaSession(false);
+    }
   }
 
   // ------------------------------------------------------------ control
@@ -257,6 +318,16 @@ export class OrganSound {
       const p = synthPlan(this.source, this.corpus, pipe.note);
       this.sonic.send("/n_set", id, "freq", midiToFreq(pipe.note), "attack", p.attack);
       this.sonic.send("/n_setn", id, "harm", p.harm.length, ...p.harm);
+    }
+  }
+
+  // Back from the background (phone locked, other app): the browser may
+  // have suspended audio. Resume if allowed; otherwise ask for a tap.
+  async wake() {
+    if (this.state !== "on" || !this.sonic) return;
+    await this.sonic.audioContext?.resume().catch(() => {});
+    if (this.sonic.audioContext?.state !== "running") {
+      this._setState("off", { paused: true });
     }
   }
 

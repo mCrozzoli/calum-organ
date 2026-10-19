@@ -22,7 +22,7 @@ says which one you're in.
 | Browser | Chrome or Edge on a computer | any |
 | Needs | internet to open the page | Python 3 (set up automatically) |
 | Presets | stored in that browser (export/import to move them) | files in `~/.calum_organ/presets/` |
-| Extras | demo organ, update board firmware | Quit button |
+| Extras | demo organ, update board firmware | Quit button, **play together** (others join by QR code) |
 | Both | simulated sound (SuperCollider in the browser), light/dark theme | |
 
 ```
@@ -98,13 +98,41 @@ start of the next bar so the rhythm doesn't stumble.
 - Reloading the page or opening a second tab shows what the organ is
   playing; it never overwrites it with a blank grid.
 
+## Playing together
+
+Phones and laptops can join the laptop that's connected to the organ and
+paint the pattern with you, live. Any number of devices, iPhones included.
+
+1. On the laptop connected to the central ESP32, start the **local app**
+   (double-click `Organ.command`) and connect the organ.
+2. Click **Share…** → **Start sharing**. A QR code and a 4-digit join code
+   appear. If the Mac asks whether Python may accept incoming connections,
+   choose **Allow**.
+3. Others, on the same Wi-Fi (or the laptop's hotspot), scan the QR code,
+   type their name, and paint. If the code doesn't work, pick the other
+   address in the Share dialog (the laptop may be on more than one network).
+
+Everyone sees the same pattern, everyone's edits (flashed in their colour),
+the organ's real playhead and who's here. Two people painting at the same
+moment keep both their strokes: edits travel as single cells and the laptop
+merges them before sending one pattern to the organ.
+
+**The laptop (host) keeps control** of the organ connection, play/stop,
+tempo, presets and Clear. Guests can only paint, and only with the code;
+**Stop sharing** disconnects them all and invalidates the code. Guests'
+phones load the app over the local network (plain http), where browsers
+don't allow web audio, so they don't play the simulated sound; they hear
+the organ.
+
 ## Listening without the organ
 
 The **Listen** panel plays the demo organ (and the preview) as simulated
 pipes, so you can hear a pattern before the hardware is there.
 
 - **🔊 Sound on** starts the sound engine (browsers only allow audio after a
-  click). Best with headphones.
+  click). Best with headphones. On iPhone the page asks for playback mode,
+  so the silent switch doesn't mute it; if it's still silent, turn up the
+  volume with the side buttons.
 - **Sound** chooses what the pipes sound like:
   - **Recorded organ:** real notes of a chapel organ (a stopped flute stop),
     one recording every three semitones, so no pipe is shifted by more than
@@ -248,7 +276,9 @@ calum-organ/
 ├── pyproject.toml
 ├── app/                    # local app (Python server) + the web UI
 │   ├── __main__.py         # starts server, opens browser
-│   ├── server.py           # stdlib HTTP + Server-Sent Events
+│   ├── server.py           # stdlib HTTP + Server-Sent Events, host/guest roles
+│   ├── session.py          # the shared pattern, who's here, sending to the organ
+│   ├── share.py            # the guest listener, join code, network addresses
 │   ├── serial_link.py      # serial transport, one request at a time
 │   ├── protocol.py         # encoder/decoder + validators
 │   ├── ports.py            # port discovery
@@ -275,6 +305,7 @@ calum-organ/
 │   ├── build_firmware.sh   # rebuild app/static/firmware/
 │   ├── build_synthdefs.scd # rebuild app/static/synthdefs/
 │   ├── build_corpus.py     # rebuild app/static/corpus/ from VSCO 2 CE
+│   ├── version_assets.py   # publish step: ?v= on file references
 │   ├── check_synthdefs.*   # render offline + measure placement
 │   └── get_mac/            # prints a board's MAC address
 ├── sim/fake_esp.py         # USB stand-in for the sender (local app)
@@ -297,7 +328,9 @@ calum-organ/
   Light/dark theme. Simulated pipe sound in SuperCollider (SuperSonic),
   with a draggable listening stage, per-pipe pitch (quarter tones too) and
   headphone 3D. Recorded-organ sound source (VSCO 2 CE), synth voices
-  modelled on it, and an About & credits panel.
+  modelled on it, and an About & credits panel. Play together: guests join
+  the local app by QR code over Wi-Fi and paint the shared pattern. iPhone
+  sound fix (audio unlocked in the tap, silent switch bypassed).
 
 ## Credits and licences
 
@@ -313,5 +346,7 @@ with Claude AI as a co-designing agent, and the projects below.
   Versilian Studios Chamber Orchestra 2: Community Edition, CC0.
 - Firmware: Arduino-ESP32 core (LGPL-2.1), ESP-IDF (Apache-2.0). Web
   updater: ESP Web Tools (Apache-2.0).
+- `app/static/vendor/qrcode-generator/`: QR codes for sharing, by Kazuhiko
+  Arase (MIT).
 
 This project's own code has no licence file yet.

@@ -15,8 +15,11 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=0,
                     help="0 = pick a free port automatically")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--share-bind", default="0.0.0.0",
+                    help="interface for guests when sharing (default: all)")
     args = ap.parse_args()
 
+    STATE.sharing.bind = args.share_bind
     server = serve(args.host, args.port)
     host, port = server.server_address[0], server.server_address[1]
     url = f"http://{host}:{port}/"
@@ -31,6 +34,7 @@ def main() -> int:
         print()
     print("[Organ] stopping the organ and shutting down")
     STATE.stop_organ()
+    STATE.sharing.stop()
     server.server_close()
     print("[Organ] bye — you can close this window")
     return 0

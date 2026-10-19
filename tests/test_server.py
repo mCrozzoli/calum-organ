@@ -83,8 +83,10 @@ def test_unknown_api_is_404(running_server):
 def test_status_snapshot(running_server):
     status, body = get(running_server, "/api/status")
     assert status == 200
-    assert json.loads(body) == {"type": "status", "connected": False, "port": None,
-                                "playing": False, "pattern": None, "peers": {}}
+    snap = json.loads(body)
+    assert snap["type"] == "status" and snap["role"] == "host"
+    assert snap["connected"] is False and snap["playing"] is False and snap["port"] is None
+    assert {"session", "organ", "users", "peers", "sharing"} <= set(snap)
 
 
 @pytest.mark.parametrize("name", ["..%2Fescape", "%2Fetc%2Fpasswd", "a%2Fb", ".hidden"])

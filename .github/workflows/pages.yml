@@ -39,6 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # Browsers cache each file for 10 minutes: stamp references with this
+      # commit so nobody gets a mix of old and new files after a deploy.
+      - run: python3 tools/version_assets.py app/static "${GITHUB_SHA::8}"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: app/static

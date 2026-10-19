@@ -12,9 +12,32 @@ v1.1 has only been tested against the simulator and demo organ.
 - [ ] Opening the port resets some ESP32 boards: confirm the app resends
       the pattern after the sender's `OK READY`.
 - [ ] Android Chrome: does Web Serial reach the board over USB-OTG?
+- [ ] iPhone: simulated sound now plays with the silent switch on? (Audio
+      is unlocked in the tap and the page asks for "playback".)
+- [ ] Playing together at the venue: guests' phones on the venue Wi-Fi or
+      the laptop's hotspot (some venue networks isolate devices from each
+      other; the hotspot always works); macOS firewall prompt (Allow);
+      latency from a phone's paint to the pipes.
 - [ ] Listen to the simulated pipes on headphones and on speakers: does
       the placement read as intended? Tune the pipe tone against the real
       pipes (`sound/organ_synthdefs.scd`).
+
+## Bluetooth (deferred, 2026-10-19)
+
+Considered for playing together and set aside for Wi-Fi via the laptop,
+which allows any number of devices, iPhones included. Facts measured then:
+
+- No iOS browser supports Web Bluetooth: iPhones and iPads couldn't join.
+- The ESP32 Arduino core (2.0.14) allows **3** BLE connections
+  (`CONFIG_BTDM_CTRL_BLE_MAX_CONN=3`); more needs a custom ESP-IDF build.
+- ESP-NOW + a BLE GATT server compiles to 1.48 MB: too big for the default
+  1.31 MB app partition, so the "Huge APP" partition scheme (the web updater
+  can flash it).
+- BLE shares the radio with ESP-NOW: the beat to the pipes could wobble.
+  Test on the hardware before relying on it.
+- If wanted for small groups without any network: a GATT service on the
+  sender carrying the same line protocol (write = commands, notify =
+  STEP/ACK), and a third backend in `backends.js` using Web Bluetooth.
 
 ## Listening stage
 
