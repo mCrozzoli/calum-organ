@@ -1,7 +1,11 @@
-// Calum Organ v1.3 — ESP32 pipe board (receiver)
+// Calum Organ v1.4 — ESP32 pipe board (receiver)
 //
-// Stores its row of the pattern and plays whichever step the sender's
-// broadcast TICK says, so all pipes stay locked to one clock. Broadcasts are
+// Stores its row of the pattern and follows the hub's broadcast TICK (the
+// master step count), so all pipes stay locked to one clock. Between ticks
+// it works out where it is in its own row: master position × its rate
+// gives the cell, and how far into the cell decides the figure (staccato,
+// repeats…). Rows can be shorter than others and run at their own rate
+// (3:2, or their own tempo), and still meet the others where they should. Broadcasts are
 // not acknowledged, so a tick can be lost: if one is more than
 // TICK_GRACE_MS late, the receiver plays the next step on its own clock and
 // the next real tick re-syncs it. If ticks stop for TICK_TIMEOUT_MS (sender
@@ -58,8 +62,10 @@ static uint32_t test_until_ms = 0;   // valve test running until then (0: none)
 static PipePacket front = {};         // pattern in use (steps == 0: none)
 static bool     running      = false;
 static uint32_t last_tick_ms = 0;    // last *real* tick (for the watchdog)
-static uint32_t last_play_ms = 0;    // last step played, real or filled in
-static PipePacket last_tick  = {};   // last step played
+static uint32_t master       = 0;    // the master step being played
+static uint32_t master_ms    = 0;    // when it began (a real tick, or filled in)
+static uint8_t  rows_on      = 0;    // pipes in use (from the tick)
+static int      cur_cell     = -1;
 static uint16_t tempo        = 120;
 static bool     seq_open     = false;   // the pattern says open
 static bool     live_open    = false;   // a held key says open
@@ -240,11 +246,13 @@ static void service_notes() {
   if (live_open != was) apply_valve();
 }
 
-static void play_step(const PipePacket &t) {
+// A new pattern waits for its moment: the next cell if the row keeps its
+// length, the start of the row if the length changes (so it stays musical).
+static void maybe_take_pattern(int cell) {
   bool swap = false;
   PipePacket next;
   portENTER_CRITICAL(&g_mux);
-  if (back_ready && (t.step == 0 || back.steps == front.steps || front.steps == 0)) {
+  if (back_ready && (front.steps == 0 || back.steps == front.steps || cell == 0)) {
     next = back;
     back_ready = false;
     swap = true;
@@ -252,17 +260,42 @@ static void play_step(const PipePacket &t) {
   portEXIT_CRITICAL(&g_mux);
   if (swap) {
     front = next;
-    Serial.printf("pattern seq=%u peer=%u steps=%u\n",
-                  (unsigned)front.seq, (unsigned)front.peer, (unsigned)front.steps);
+    Serial.printf("pattern seq=%u peer=%u steps=%u rate=%u/%u\n", (unsigned)front.seq, (unsigned)front.peer,
+                  (unsigned)front.steps, (unsigned)front.rate_num, (unsigned)front.rate_den);
   }
+}
 
-  bool open = false;
-  if (front.steps > 0 && front.peer < t.rows) {
-    uint16_t s = t.step % front.steps;
-    open = (front.pattern[s >> 3] >> (s & 7)) & 1;
+static void service_play(uint32_t now) {
+  if (!running) return;
+  uint32_t step_ms = 60000UL / tempo;
+  // Lost tick: move on by ourselves once it's late, keeping the phase.
+  // (If the real tick then arrives late, it just resets the same step.)
+  if (now - master_ms >= step_ms + TICK_GRACE_MS) {
+    master++;
+    master_ms += step_ms;
   }
-  seq_open = open;
-  apply_valve();
+  if (front.steps == 0) maybe_take_pattern(0);
+  if (front.steps == 0) return;
+  double frac = (double)(now - master_ms) / step_ms;
+  if (frac > 0.999) frac = 0.999;
+  double rate = front.rate_den ? (double)front.rate_num / front.rate_den : 1.0;
+  double pos = ((double)master + frac) * rate;
+  uint32_t whole = (uint32_t)pos;
+  int cell = whole % front.steps;
+  if (cell != cur_cell) {
+    maybe_take_pattern(cell);
+    rate = front.rate_den ? (double)front.rate_num / front.rate_den : 1.0;
+    pos = ((double)master + frac) * rate;
+    whole = (uint32_t)pos;
+    cell = whole % front.steps;
+    cur_cell = cell;
+  }
+  double phase = pos - whole;
+  bool open = front.peer < rows_on && figure_open(get_figure(front.pattern, cell), phase);
+  if (open != seq_open) {
+    seq_open = open;
+    apply_valve();
+  }
 }
 
 void loop() {
@@ -282,6 +315,7 @@ void loop() {
   if (do_stop) {
     if (running) Serial.println("stop");
     running = false;
+    cur_cell = -1;
     seq_open = false;
     live_open = false;                   // Stop silences everything
     apply_valve();
@@ -291,28 +325,19 @@ void loop() {
     if (!running) Serial.println("play");
     running = true;
     last_tick_ms = now;
-    last_play_ms = now;
-    last_tick = t;
+    master = t.count;
+    master_ms = now;
+    rows_on = t.rows;
     tempo = t.tempo ? t.tempo : 120;
-    play_step(t);
-    return;
   }
-  // Lost tick: play the next step on our own clock, keeping the phase.
-  // (If the real tick then arrives late, it just replays the same step.)
-  uint32_t step_ms = 60000UL / tempo;
-  if (running && front.steps > 0 && now - last_play_ms >= step_ms + TICK_GRACE_MS) {
-    PipePacket t2 = last_tick;
-    t2.step = (uint16_t)((last_tick.step + 1) % front.steps);
-    last_tick = t2;
-    last_play_ms += step_ms;
-    play_step(t2);
-  }
-  // Watchdog: no ticks -> sender gone -> never leave a valve open.
+  service_play(now);
+  // Watchdog: no ticks -> hub gone -> never leave a valve open.
   uint32_t three_steps = 3 * (60000UL / tempo);
   uint32_t timeout = three_steps > TICK_TIMEOUT_MS ? three_steps : TICK_TIMEOUT_MS;
   if (running && now - last_tick_ms > timeout) {
     Serial.println("tick timeout, stop");
     running = false;
+    cur_cell = -1;
     seq_open = false;
     apply_valve();
   }

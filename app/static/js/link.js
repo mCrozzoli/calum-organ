@@ -187,6 +187,15 @@ export class SerialLink {
     const seq = parseInt(ack.detail.split(/\s+/)[1], 10);
     return Number.isNaN(seq) ? null : seq;
   }
+  // Hub 1.4+: per row its length, rate and figures. rows: [{len, num, den, cells}]
+  async sendPattern2(tempo, rows) {
+    const grid = rows.map((r) => r.cells);
+    const width = Math.max(...grid.map((r) => r.length));
+    const padded = grid.map((r) => [...r, ...new Array(width - r.length).fill(0)]);
+    const ack = await this.request(protocol.encodePattern2(tempo, padded, rows), "PAT");
+    const seq = parseInt(ack.detail.split(/\s+/)[1], 10);
+    return Number.isNaN(seq) ? null : seq;
+  }
   sendPlay() { return this.request(protocol.encodePlay(), "PLAY"); }
   sendStop() { return this.request(protocol.encodeStop(), "STOP"); }
   // Hub 1.2+: list the pipes it knows (PIPE lines, then OK PIPES). A 1.1

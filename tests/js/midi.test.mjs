@@ -119,7 +119,7 @@ test("pad grid: pads edit the pattern, side buttons play", () => {
 
 test("pad grid LEDs", () => {
   const grid = [[1, 0, 0, 0, 0, 0, 0, 0, 1], [0, 1, 0, 0, 0, 0, 0, 0, 0]];
-  const f = m.gridFrame({ grid, rows: 2, cols: 9, playhead: 1, page: 0, live: 0b10 });
+  const f = m.gridFrame({ grid, rows: 2, cols: 9, heads: [1, 1], page: 0, live: 0b10 });
   assert.equal(f.pads[0], "on");
   assert.equal(f.pads[1], "head");
   assert.equal(f.pads[9], "hit", "pipe B at the playhead");
@@ -129,10 +129,12 @@ test("pad grid LEDs", () => {
   const all = m.ledMessages(lp, f);
   assert.equal(all.length, 72);
   assert.deepEqual(all[0], [0x90, 81, 13], "top-left pad lit yellow");
-  const f2 = m.gridFrame({ grid, rows: 2, cols: 9, playhead: 2, page: 0, live: 0 });
+  const f2 = m.gridFrame({ grid, rows: 2, cols: 9, heads: [2, 2], page: 0, live: 0 });
   const diff = m.ledMessages(lp, f2, f);
   assert.equal(diff.length, 5, "only what changed: two playhead pads x2 rows + one side button");
-  const page2 = m.gridFrame({ grid, rows: 2, cols: 9, playhead: -1, page: 1, live: 0 });
+  const page2 = m.gridFrame({ grid, rows: 2, cols: 9, heads: [-1, -1], page: 1, live: 0 });
+  const own = m.gridFrame({ grid: [[0, 0, 3]], rows: 1, cols: 3, heads: [2], page: 0, live: 0 });
+  assert.equal(own.pads[2], "hit", "a figure is lit; each row has its own playhead");
   assert.equal(page2.pads[0], "on", "step 9 of pipe A");
   assert.equal(page2.pads[1], "off", "beyond the last step");
 });

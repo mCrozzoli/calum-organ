@@ -1,7 +1,7 @@
-// A simulated ESP32 sender, so the app can be tried without hardware.
-// JavaScript twin of sim/fake_esp.py: answers PAT with OK + ACK/NAK per
-// row, keeps time after PLAY and reports STEP <n>, and announces itself
-// with OK READY like a real board does when the port opens.
+// A simulated ESP32 hub (1.4), so the app can be tried without hardware:
+// answers PAT/PAT2 with OK + ACK/NAK per row, keeps time after PLAY and
+// reports STEP <n> (a count that never wraps), and announces itself with
+// OK READY like a real board does when the port opens.
 
 import * as protocol from "./protocol.js";
 
@@ -14,7 +14,6 @@ export class FakeSender {
     this._buf = "";
     this.seq = 0;
     this.tempo = 120;
-    this._curSteps = 0;
     this._nextSteps = 0;
     this._step = 0;
     this._timer = null;
@@ -38,7 +37,12 @@ export class FakeSender {
     if (line.startsWith("PAT")) {
       let pat;
       try {
-        pat = protocol.decodePattern(line);
+        if (line.startsWith("PAT2")) {
+          const p2 = protocol.decodePattern2(line);
+          pat = { tempo: p2.tempo, rows: p2.rows.length, cols: Math.max(...p2.rows.map((r) => r.len)), rhythm: p2.rows };
+        } else {
+          pat = protocol.decodePattern(line);
+        }
       } catch (e) {
         this._write(`ERR ${e.message}\n`);
         return;
@@ -46,7 +50,6 @@ export class FakeSender {
       this.seq = (this.seq + 1) & 0xffff;
       this.tempo = pat.tempo;
       this._nextSteps = pat.cols;
-      if (!this.playing) this._curSteps = pat.cols;
       this.patterns.push(pat);
       this._write(`OK PAT ${this.seq}\n`);
       for (let peer = 0; peer < pat.rows; peer++) {
@@ -57,7 +60,6 @@ export class FakeSender {
       if (this._nextSteps === 0) { this._write("ERR no pattern\n"); return; }
       this.stopClock();
       this._step = 0;
-      this._curSteps = this._nextSteps;
       this._write("OK PLAY\n");
       this._nextTick = now();
       this._tick();
@@ -69,7 +71,7 @@ export class FakeSender {
       this._write("PONG\n");
     } else if (line === "PIPES") {
       this.announcePipes();
-      this._write("OK PIPES fw 1.3.0\n");
+      this._write("OK PIPES fw 1.4.0\n");
     } else if (line.startsWith("NOTE ")) {
       this.notes = parseInt(line.slice(5), 10) & 0xff;   // no reply, like the hub
     } else {
@@ -85,10 +87,9 @@ export class FakeSender {
     }
   }
 
+  // Like a 1.4 hub: the step count never wraps (each pipe wraps its own row).
   _tick() {
-    if (this._step === 0) this._curSteps = this._nextSteps;
-    const step = this._step;
-    this._step = step + 1 >= this._curSteps ? 0 : step + 1;
+    const step = this._step++;
     this._write(`STEP ${step}\n`);
     this._nextTick += 60000 / this.tempo;
     this._timer = setTimeout(() => this._tick(), Math.max(0, this._nextTick - now()));

@@ -164,15 +164,17 @@ export function recordStep(playhead, lastStepAt, stepMs, now, cols) {
 
 // ---------------------------------------------------------------- pad grids
 // An LED frame: 64 pad colours (row 0 = top = pipe A) + 8 side buttons.
+// (A pad shows on/off; the figure itself is on the screen.)
 // Colours are names; each profile turns them into its own palette.
-export function gridFrame({ grid, rows, cols, playhead, page, live }) {
+// heads: each row's playhead column (rows can run at their own rate).
+export function gridFrame({ grid, rows, cols, heads = [], page, live }) {
   const pads = new Array(64).fill("off");
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       const col = page * 8 + c;
       if (r >= rows || col >= cols) continue;
-      const on = grid[r]?.[col] === 1;
-      const head = col === playhead;
+      const on = (grid[r]?.[col] || 0) > 0;
+      const head = col === heads[r];
       pads[r * 8 + c] = head ? (on ? "hit" : "head") : on ? "on" : "dim";
     }
   }

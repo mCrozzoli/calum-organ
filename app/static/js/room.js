@@ -45,7 +45,7 @@ export function cleanName(raw, fallback = "Guest") {
 export function allowedCells(user, cells, rows, cols) {
   if (!Array.isArray(cells)) return [];
   return cells.slice(0, MAX_CELLS).filter((c) => Array.isArray(c) && c.length === 3
-    && c.every(Number.isInteger) && (c[2] === 0 || c[2] === 1)
+    && c.every(Number.isInteger) && c[2] >= 0 && c[2] <= 7          // 0 off, 1..7 figures
     && c[0] >= 0 && c[0] < rows && c[1] >= 0 && c[1] < cols
     && (user.perm !== "pipe" || c[0] === user.pipe));
 }
@@ -170,7 +170,7 @@ export class RoomHost {
     } else if (msg.t === "replace" && mayConduct(user)) {
       try {
         validatePattern(msg.tempo, msg.grid);
-        this.hooks.onReplace(msg.tempo, msg.grid, user);
+        this.hooks.onReplace(msg.tempo, msg.grid, user, msg.rhythm);
       } catch (_) { /* ignore a bad pattern */ }
     } else if (msg.t === "transport" && mayConduct(user) && (msg.action === "play" || msg.action === "stop")) {
       this.hooks.onTransport(msg.action, user);
@@ -208,9 +208,9 @@ export class RoomHost {
     this.rev += 1;
     this.broadcast({ t: "cells", cells, rev: this.rev, by: byId });
   }
-  pattern(tempo, grid, byId) {
+  pattern(tempo, grid, byId, rhythm) {
     this.rev += 1;
-    this.broadcast({ t: "pattern", tempo, grid, rev: this.rev, by: byId });
+    this.broadcast({ t: "pattern", tempo, grid, rhythm, rev: this.rev, by: byId });
   }
   organ(status) { this.broadcast({ t: "organ", ...status }); }  // connected, demo, playing, port, seq, sending, error
   step(step) { this.broadcast({ t: "step", step }); }
@@ -333,11 +333,12 @@ export class RoomGuestBackend {
              users: m.users, peers: {} });
         break;
       case "cells": ev({ type: "cells", cells: m.cells, rev: m.rev, by: m.by }); break;
-      case "pattern": ev({ type: "pattern", tempo: m.tempo, grid: m.grid, rev: m.rev, by: m.by }); break;
+      case "pattern": ev({ type: "pattern", tempo: m.tempo, grid: m.grid, rhythm: m.rhythm, rev: m.rev, by: m.by }); break;
       case "users": ev({ type: "presence", users: m.users }); break;
       case "role": ev({ type: "role", perm: m.perm, pipe: m.pipe }); break;
       case "organ":
-        ev({ type: "status", connected: !!m.connected, demo: !!m.demo, playing: !!m.playing, port: m.port || null });
+        ev({ type: "status", connected: !!m.connected, demo: !!m.demo, playing: !!m.playing, port: m.port || null,
+             window: m.window || null });
         ev({ type: "room-live", live: (m.live || 0) & 0xff });
         ev({ type: "organ", state: m.error ? "error" : m.sending ? "sending" : "sent", seq: m.seq ?? null, error: m.error || null });
         break;
@@ -360,7 +361,7 @@ export class RoomGuestBackend {
   }
 
   async sendCells(cells) { this._send({ t: "cells", cells }); return {}; }
-  async replacePattern(tempo, grid) { this._send({ t: "replace", tempo, grid }); return {}; }
+  async replacePattern(tempo, grid, _by, rhythm) { this._send({ t: "replace", tempo, grid, rhythm }); return {}; }
   async play() { this._send({ t: "transport", action: "play" }); }
   async stop() { this._send({ t: "transport", action: "stop" }); }
   rename(name) { this.name = name; try { this._send({ t: "rename", name }); } catch (_) {} }
@@ -382,12 +383,12 @@ export class RoomGuestBackend {
       const p = readPresets()[name];
       if (!p) throw new Error("not found");
       validatePattern(p.tempo, p.grid);
-      return { name, tempo: p.tempo, grid: p.grid };
+      return { name, tempo: p.tempo, grid: p.grid, ...(p.rhythm ? { rhythm: p.rhythm } : {}) };
     },
     save: async (name, p) => {
       validatePattern(p.tempo, p.grid);
       const all = readPresets();
-      all[name] = { tempo: p.tempo, grid: p.grid };
+      all[name] = { tempo: p.tempo, grid: p.grid, ...(p.rhythm ? { rhythm: p.rhythm } : {}) };
       localStorage.setItem(PRESETS_KEY, JSON.stringify(all));
     },
     remove: async (name) => {

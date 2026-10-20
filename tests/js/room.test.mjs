@@ -29,7 +29,8 @@ test("what each role may paint", () => {
   assert.deepEqual(room.allowedCells({ perm: "pipe", pipe: 1 }, cells, 4, 8), [[1, 3, 0]]);
   assert.deepEqual(room.allowedCells({ perm: "cohost" }, cells, 4, 8), cells);
   // outside the grid, malformed, or not 0/1: dropped
-  const bad = [[4, 0, 1], [0, 8, 1], [-1, 0, 1], [0, 0, 2], [0, 0], "x", [0.5, 0, 1]];
+  const bad = [[4, 0, 1], [0, 8, 1], [-1, 0, 1], [0, 0, 8], [0, 0], "x", [0.5, 0, 1]];
+  assert.deepEqual(room.allowedCells({ perm: "paint" }, [[0, 0, 5]], 4, 8), [[0, 0, 5]], "figures are cells too");
   assert.deepEqual(room.allowedCells({ perm: "paint" }, bad, 4, 8), []);
   assert.deepEqual(room.allowedCells({ perm: "paint" }, "nope", 4, 8), []);
 });
@@ -103,7 +104,7 @@ test("the host enforces each role", () => {
   host._message(ana, { t: "transport", action: "play" });
   host._message(ana, { t: "transport", action: "explode" });
   host._message(ana, { t: "replace", tempo: 90, grid });
-  host._message(ana, { t: "replace", tempo: 90, grid: [[3]] });
+  host._message(ana, { t: "replace", tempo: 90, grid: [[9]] });          // not a figure
   assert.deepEqual(calls, [["transport", "play", "ana"], ["replace", 90, "ana"]]);
 
   // nobody can change the host's role
@@ -158,7 +159,7 @@ test("a guest's backend turns room messages into the app's events", () => {
   assert.equal(events[0].perm, "pipe");
   assert.equal(events[0].session.rev, 4);
   assert.equal(events[0].organ.seq, 7);
-  assert.deepEqual(events[1], { type: "status", connected: true, demo: false, playing: true, port: "usb" });
+  assert.deepEqual(events[1], { type: "status", connected: true, demo: false, playing: true, port: "usb", window: null });
   assert.deepEqual(events[2], { type: "room-live", live: 0 });
   assert.deepEqual(events[3], { type: "organ", state: "sent", seq: 8, error: null });
   assert.deepEqual(events[4], { type: "step", step: 3 });

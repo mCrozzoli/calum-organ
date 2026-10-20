@@ -17,8 +17,8 @@
 #include <stdint.h>
 
 // Printed at boot; must match the app version (tests/test_firmware.py).
-#define FW_VERSION "1.3.0"
-#define FW_CODE    0x0103      // in PKT_HELLO: major << 8 | minor
+#define FW_VERSION "1.4.0"
+#define FW_CODE    0x0104      // in PKT_HELLO: major << 8 | minor
 
 #define NUM_PEERS 8
 #define NO_PIPE   0xFF        // a pipe whose letter hasn't been set
@@ -58,20 +58,58 @@ enum : uint8_t {
 #define NOTE_REPEAT_MS  150
 #define NOTE_TIMEOUT_MS 600
 
-#define PIPE_MAGIC 0xC0
+// 1.4 changed the packet (figures, rates, step count): boards on 1.3 or
+// older ignore it, and 1.4 ignores theirs. Update the hub and every pipe.
+#define PIPE_MAGIC 0xC1
 
 // Fixed-size, safe-to-memcpy payload. Fields unused by a packet type are 0.
 typedef struct __attribute__((packed)) {
   uint8_t  magic;        // PIPE_MAGIC
   uint8_t  type;         // PKT_*
   uint16_t seq;          // PATTERN: pattern sequence number; HELLO: FW_CODE
-  uint16_t tempo;        // steps per minute (PATTERN and TICK)
-  uint16_t steps;        // PATTERN: number of steps (1..32)
-  uint16_t step;         // TICK: step to play now (0-based)
+  uint16_t tempo;        // master steps per minute (PATTERN and TICK)
+  uint16_t steps;        // PATTERN: this pipe's row length (1..32)
+  uint16_t rate_num;     // PATTERN: the row runs rate_num/rate_den times
+  uint16_t rate_den;     //          as fast as the master beat
   uint8_t  peer;         // PATTERN: destination pipe (0..7); HELLO: own letter or NO_PIPE
-  uint8_t  rows;         // TICK: active rows; peers >= rows stay closed
-  uint8_t  pattern[4];   // PATTERN: bitfield, LSB = step 0 (32 steps max)
+  uint8_t  rows;         // TICK: active rows; pipes >= rows stay closed
+  uint32_t count;        // TICK: master steps since Play (0, 1, 2, … never wraps)
+  uint8_t  pattern[12];  // PATTERN: a figure per cell, 3 bits each (cell 0 = bits 0..2);
+                         // NOTE: pattern[0] = bit mask of pipes held live
 } PipePacket;
+
+// Figures (what a cell plays within its step), as in app/static/js/rhythm.js.
+enum : uint8_t {
+  FIG_OFF = 0, FIG_FULL = 1, FIG_DETACHED = 2, FIG_STACCATO = 3,
+  FIG_REP2 = 4, FIG_REP3 = 5, FIG_REP4 = 6, FIG_OFFBEAT = 7,
+};
+
+static inline uint8_t get_figure(const uint8_t *bits, int cell) {
+  int b = cell * 3;
+  uint16_t w = bits[b >> 3] | ((b >> 3) + 1 < 12 ? bits[(b >> 3) + 1] << 8 : 0);
+  return (w >> (b & 7)) & 7;
+}
+static inline void set_figure(uint8_t *bits, int cell, uint8_t fig) {
+  int b = cell * 3;
+  uint16_t w = bits[b >> 3] | ((b >> 3) + 1 < 12 ? bits[(b >> 3) + 1] << 8 : 0);
+  w = (w & ~(7 << (b & 7))) | ((fig & 7) << (b & 7));
+  bits[b >> 3] = w & 0xFF;
+  if ((b >> 3) + 1 < 12) bits[(b >> 3) + 1] = w >> 8;
+}
+
+// Is the valve open, for this figure, this far (0..1) into its step?
+static inline bool figure_open(uint8_t fig, double phase) {
+  switch (fig) {
+    case FIG_FULL:     return true;
+    case FIG_DETACHED: return phase < 0.85;
+    case FIG_STACCATO: return phase < 0.3;
+    case FIG_REP2:     return phase * 2 - (int)(phase * 2) < 0.5;
+    case FIG_REP3:     return phase * 3 - (int)(phase * 3) < 0.5;
+    case FIG_REP4:     return phase * 4 - (int)(phase * 4) < 0.5;
+    case FIG_OFFBEAT:  return phase >= 0.5;
+    default:           return false;
+  }
+}
 
 // Receivers stop (valve closed) if ticks stop arriving for this long,
 // e.g. sender unplugged. Also at least 3 steps at the current tempo.

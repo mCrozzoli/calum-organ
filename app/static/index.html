@@ -28,7 +28,7 @@
 </head>
 <body data-role="unknown">
   <header class="topbar">
-    <div class="brand">Calum Organ <span class="ver">v1.3 · <span id="modeName">…</span></span></div>
+    <div class="brand">Calum Organ <span class="ver">v1.4 · <span id="modeName">…</span></span></div>
 
     <div class="group conn host-only organ-only">
       <select id="portSelect" aria-label="Serial port"></select>
@@ -48,6 +48,8 @@
       <input id="rowsInput" type="number" min="1" max="8" value="4" inputmode="numeric">
       <label for="colsInput">Steps</label>
       <input id="colsInput" type="number" min="1" max="32" value="16" inputmode="numeric">
+      <label for="meterSelect">Beat</label>
+      <select id="meterSelect" title="How the steps group into beats: 4, 3, 3+3+2…"></select>
       <label for="tempoInput">Tempo</label>
       <input id="tempoInput" type="number" min="20" max="300" value="120" inputmode="numeric">
       <span class="unit" title="Steps per minute">steps/min</span>
@@ -96,6 +98,7 @@
 
   <main>
     <section class="grid-wrap" id="gridWrap">
+      <div class="brushes host-only-figures" id="brushes" role="radiogroup" aria-label="What painting puts in a cell"></div>
       <canvas id="grid" aria-label="Pattern grid: rows are pipes, columns are steps"></canvas>
       <p class="hint" id="gridHint">Click or drag to paint · drag from a lit cell to erase · Space = play/stop · C = clear</p>
     </section>
@@ -241,7 +244,7 @@
 
   <dialog id="aboutDialog" class="wide about" aria-labelledby="aboutTitle">
     <form method="dialog">
-      <h2 id="aboutTitle">Calum Organ <span class="ver">v1.3</span></h2>
+      <h2 id="aboutTitle">Calum Organ <span class="ver">v1.4</span></h2>
       <p>A step sequencer for Calum's pipe organ: each pipe has a valve driven
         by an ESP32 board, and the boards play together over ESP-NOW. Draw a
         pattern and the organ plays it. Without the organ, a simulated one
@@ -310,6 +313,28 @@
       <menu>
         <button value="cancel" id="confirmCancel">Cancel</button>
         <button value="ok" id="confirmOk" class="accent">OK</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="rowDialog" class="row-rhythm" aria-labelledby="rowTitle">
+    <form method="dialog">
+      <p class="confirm-title" id="rowTitle"></p>
+      <label class="ctl">Length
+        <input type="number" id="rowLen" min="1" max="32" inputmode="numeric"> steps
+        <span class="muted" id="rowLenNote"></span></label>
+      <fieldset class="rate-choices">
+        <legend>Speed against the master beat</legend>
+        <label><input type="radio" name="rateKind" value="same"> same as everyone</label>
+        <label><input type="radio" name="rateKind" value="ratio"> a ratio:
+          <select id="rowRatio" aria-label="Ratio"></select></label>
+        <label><input type="radio" name="rateKind" value="bpm"> its own tempo:
+          <input type="number" id="rowBpm" min="5" max="600" inputmode="numeric"> steps/min</label>
+      </fieldset>
+      <p class="muted" id="rowExplain"></p>
+      <menu>
+        <button type="button" id="rowReset">Reset</button>
+        <button value="close" class="accent">Done</button>
       </menu>
     </form>
   </dialog>

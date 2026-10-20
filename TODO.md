@@ -79,6 +79,17 @@ The grid is a `<canvas>`, so it can only be used with a mouse or touch.
 - [ ] Space currently means play/stop globally. Decide how that coexists
       with Space = toggle cell when the grid has focus.
 
+## Figures and per-pipe rhythm (built in 1.4): still to check
+
+Tested in the app and the demo organ only; the firmware compiles.
+
+- [ ] Update the hub and all pipes to 1.4 together (Boards).
+- [ ] Measure how fast the valves can open and close; set the warning
+      (`MIN_VALVE_MS` in app.js, 25 ms now) from that.
+- [ ] Listen: repeats and staccato sound right, rows at 3:2 and 121/120
+      stay locked to each other over minutes.
+- [ ] Maybe: swing (decided against for now), a figure for accents.
+
 ## Gestures (built in 1.3): still to check
 
 Tested only with simulated motion and a simulated controller.

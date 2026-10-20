@@ -1,4 +1,4 @@
-// Calum Organ v1.3 — ESP32 hub (sender, master clock)
+// Calum Organ v1.4 — ESP32 hub (sender, master clock)
 //
 // Parses a line-based protocol from USB serial, unicasts each grid row to
 // its pipe over ESP-NOW (with retry), and while playing broadcasts one TICK
@@ -7,8 +7,13 @@
 // Pipes announce themselves (PKT_HELLO with their letter), so the hub learns
 // which board is which pipe; PEER_MACS (peers.h) only covers 1.1 pipes.
 //
+// 1.4: each pipe's row has its own length, rate and figures (PAT2); the
+// hub only keeps the master beat: TICK carries a step count that never
+// wraps, and each pipe works out where it is in its own row.
+//
 // Protocol (see ../../app/protocol.py for the canonical spec):
 //   host -> sender:  PAT <tempo> <rows> <cols> <row0bits> ... <rowNbits>\n
+//                    PAT2 <tempo> <rows> <len>/<num>/<den>/<figures> ...\n
 //                    PLAY\n  STOP\n  PING\n  PIPES\n  NOTE <mask>\n
 //   sender -> host:  OK PAT <seq>  ACK <peer> <seq>  NAK <peer> <seq>
 //                    OK PLAY  OK STOP  PONG  STEP <n>  ERR <reason>
@@ -72,10 +77,8 @@ static uint32_t next_note_ms = 0;
 // ---- clock -----------------------------------------------------------------
 static bool     running      = false;
 static uint16_t tempo        = 120;
-static uint16_t cur_steps    = 0;    // steps in the bar being played
-static uint16_t next_steps   = 0;    // steps of the most recent pattern
 static uint8_t  active_rows  = 0;
-static uint16_t cur_step     = 0;
+static uint32_t count        = 0;    // master steps since Play
 static uint32_t next_tick_ms = 0;
 
 static uint32_t step_ms() { return 60000UL / (tempo ? tempo : 120); }
@@ -326,18 +329,16 @@ static void service_clock() {
   uint32_t now = millis();
   if ((int32_t)(now - next_tick_ms) < 0) return;
 
-  if (cur_step == 0) cur_steps = next_steps;   // new step count starts a bar
-
   PipePacket tick = {};
   tick.magic = PIPE_MAGIC;
   tick.type  = PKT_TICK;
   tick.tempo = tempo;
-  tick.step  = cur_step;
+  tick.count = count;
   tick.rows  = active_rows;
   broadcast(tick);
-  Serial.printf("STEP %u\n", (unsigned)cur_step);
+  Serial.printf("STEP %lu\n", (unsigned long)count);
 
-  cur_step = (cur_step + 1 >= cur_steps) ? 0 : cur_step + 1;
+  count++;
   next_tick_ms += step_ms();
   // If we fell far behind (e.g. a long serial burst), don't play catch-up.
   if ((int32_t)(now - next_tick_ms) > (int32_t)step_ms()) next_tick_ms = now + step_ms();
@@ -418,6 +419,28 @@ static int tokenize(char *line, char **tokens, int max_tokens) {
   return n;
 }
 
+// Send each pipe its row (validated by the caller).
+static void commit_pattern(int t, int rows, PipePacket *pkts) {
+  g_seq = (g_seq + 1) & 0xFFFF;
+  tempo       = (uint16_t)t;
+  active_rows = (uint8_t)rows;
+  have_pattern = true;
+  for (int row = 0; row < rows; row++) {
+    pkts[row].magic = PIPE_MAGIC;
+    pkts[row].type  = PKT_PATTERN;
+    pkts[row].seq   = g_seq;
+    pkts[row].tempo = tempo;
+    pkts[row].peer  = (uint8_t)row;
+    portENTER_CRITICAL(&g_mux);
+    peer_pkt[row] = pkts[row];
+    attempts[row] = 0;
+    portEXIT_CRITICAL(&g_mux);
+    send_to_peer(row);
+  }
+  Serial.printf("OK PAT %u\n", (unsigned)g_seq);
+}
+
+// PAT <tempo> <rows> <cols> <bits>…: the 1.3 frame (on/off, one rate).
 static void handle_pat(int argc, char **argv) {
   if (argc < 4) { Serial.println("ERR PAT short"); return; }
   int t     = atoi(argv[1]);
@@ -434,39 +457,51 @@ static void handle_pat(int argc, char **argv) {
     const char *bits = argv[4 + row];
     if ((int)strlen(bits) != cols) { Serial.println("ERR bits len"); return; }
     for (int j = 0; j < cols; j++) {
-      if (bits[j] == '1')      pkts[row].pattern[j >> 3] |= (uint8_t)(1 << (j & 7));
+      if (bits[j] == '1')      set_figure(pkts[row].pattern, j, FIG_FULL);
       else if (bits[j] != '0') { Serial.println("ERR bit char"); return; }
     }
-  }
-
-  g_seq = (g_seq + 1) & 0xFFFF;
-  tempo       = (uint16_t)t;
-  next_steps  = (uint16_t)cols;
-  active_rows = (uint8_t)rows;
-  if (!running) cur_steps = next_steps;
-  have_pattern = true;
-
-  for (int row = 0; row < rows; row++) {
-    pkts[row].magic = PIPE_MAGIC;
-    pkts[row].type  = PKT_PATTERN;
-    pkts[row].seq   = g_seq;
-    pkts[row].tempo = tempo;
     pkts[row].steps = (uint16_t)cols;
-    pkts[row].peer  = (uint8_t)row;
-    portENTER_CRITICAL(&g_mux);
-    peer_pkt[row] = pkts[row];
-    attempts[row] = 0;
-    portEXIT_CRITICAL(&g_mux);
-    send_to_peer(row);
+    pkts[row].rate_num = pkts[row].rate_den = 1;
   }
-  Serial.printf("OK PAT %u\n", (unsigned)g_seq);
+  commit_pattern(t, rows, pkts);
+}
+
+// PAT2 <tempo> <rows> <len>/<num>/<den>/<figures>…: per row its length,
+// its rate against the master beat and a figure (0..7) per cell.
+static void handle_pat2(int argc, char **argv) {
+  if (argc < 4) { Serial.println("ERR PAT2 short"); return; }
+  int t    = atoi(argv[1]);
+  int rows = atoi(argv[2]);
+  if (t < 20 || t > 300)               { Serial.println("ERR tempo"); return; }
+  if (rows < 1 || rows > NUM_PEERS)    { Serial.println("ERR rows"); return; }
+  if (argc != 3 + rows)                { Serial.println("ERR row count"); return; }
+  PipePacket pkts[NUM_PEERS] = {};
+  for (int row = 0; row < rows; row++) {
+    char *p = argv[3 + row];
+    char *end;
+    long len = strtol(p, &end, 10);
+    if (*end != '/' || len < 1 || len > 32) { Serial.println("ERR row len"); return; }
+    long num = strtol(end + 1, &end, 10);
+    if (*end != '/' || num < 1 || num > 1000) { Serial.println("ERR rate"); return; }
+    long den = strtol(end + 1, &end, 10);
+    if (*end != '/' || den < 1 || den > 1000) { Serial.println("ERR rate"); return; }
+    const char *figs = end + 1;
+    if ((long)strlen(figs) != len) { Serial.println("ERR figures len"); return; }
+    for (int j = 0; j < len; j++) {
+      if (figs[j] < '0' || figs[j] > '7') { Serial.println("ERR figure"); return; }
+      set_figure(pkts[row].pattern, j, (uint8_t)(figs[j] - '0'));
+    }
+    pkts[row].steps = (uint16_t)len;
+    pkts[row].rate_num = (uint16_t)num;
+    pkts[row].rate_den = (uint16_t)den;
+  }
+  commit_pattern(t, rows, pkts);
 }
 
 static void handle_play() {
-  if (next_steps == 0) { Serial.println("ERR no pattern"); return; }
+  if (!have_pattern) { Serial.println("ERR no pattern"); return; }
   running      = true;
-  cur_step     = 0;
-  cur_steps    = next_steps;
+  count        = 0;
   next_tick_ms = millis();   // first tick right away
   Serial.println("OK PLAY");
 }
@@ -477,6 +512,7 @@ static void handle_line(char *line) {
   int argc = tokenize(line, argv, 16);
   if (argc == 0) return;
   if (strcmp(argv[0], "PAT") == 0)       handle_pat(argc, argv);
+  else if (strcmp(argv[0], "PAT2") == 0) handle_pat2(argc, argv);
   else if (strcmp(argv[0], "PLAY") == 0) handle_play();
   else if (strcmp(argv[0], "STOP") == 0) { stop_all(); Serial.println("OK STOP"); }
   else if (strcmp(argv[0], "PING") == 0) Serial.println("PONG");

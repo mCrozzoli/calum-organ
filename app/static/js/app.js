@@ -1,4 +1,4 @@
-// Calum Organ v1.3 — frontend
+// Calum Organ v1.4 — frontend
 // Pure vanilla JS modules, no build step. Runs in two places:
 //   - opened by the double-click app (Organ.command): talks to the local
 //     Python server (LocalBackend)
@@ -20,15 +20,17 @@ import { Learner, Hysteresis } from "./mlp.js";
 import { PhoneMotion, DualSense, AnyGamepad, PRESETS } from "./motion.js";
 import { RoomHost, RoomGuestBackend, cleanCode, isCode, makeCode } from "./room.js";
 import { validatePattern } from "./protocol.js";
+import { FIG, FIGURES, rowAt, rateLabel, rateFraction, beatMarks, defaultRhythm, fitRhythm, cleanRate, parseMeter,
+         meterText, METERS, RATIOS, isPlain, shortestMs, figureOpen } from "./rhythm.js";
 import { OrganSound } from "./sound.js";
 import { SOURCES } from "./corpus.js";
 import { PIPES, ROOMS, MIN_NOTE, MAX_NOTE, noteName, isQuarterTone, defaultStage, sanitizeStage, describe } from "./stage.js";
 
 const MAX_PIPES = 8;
-const BEAT = 4;          // steps per beat group
 const GAP = 3;           // px between cells
-const BEAT_EXTRA = 5;    // extra px between beat groups
-const LABEL_W = 22;      // row-label column
+const BEAT_EXTRA = 4;    // extra px before a beat
+const BAR_EXTRA = 8;     // … and before a bar (the whole meter grouping)
+const LABEL_W = 34;      // row-label column (pipe letter, its length and rate)
 const HEADER_H = 18;     // step-number row
 const SEND_DEBOUNCE_MS = 60;
 
@@ -42,7 +44,9 @@ const state = {
   port: null,
   playing: false,        // connected: organ's state; else: preview running
   transportBusy: false,
-  playhead: -1,
+  playhead: -1,          // the master step count (-1: stopped)
+  heads: [],             // per row: {cell, open} where its own playhead is
+  brush: 1,              // the figure painting puts in an empty cell (rhythm.js FIG)
   lastStepAt: 0,
   sentSeq: null,         // pattern seq the sender last accepted
   dirty: false,          // edits not yet accepted by the sender
@@ -75,6 +79,7 @@ function freshPeers() {
   return Array.from({ length: MAX_PIPES }, () => ({ seq: null, ok: null }));
 }
 state.grid = makeGrid(state.rows, state.cols);
+state.rhythm = defaultRhythm(state.rows, state.cols);
 state.peers = freshPeers();
 
 let backend = null;
@@ -88,7 +93,7 @@ const conducts = () => state.role === "host" || state.perm === "cohost";
 const mayPaintRow = (i) => state.perm !== "pipe" || i === state.myPipe;
 
 // ---------------------------------------------------------------- unsaved changes
-const patternKey = () => JSON.stringify([state.tempo, state.grid]);
+const patternKey = () => JSON.stringify([state.tempo, state.grid, state.rhythm]);
 const isBlank = () => state.grid.every((row) => row.every((v) => !v));
 function isModified() {
   return state.savedKey === null ? !isBlank() : patternKey() !== state.savedKey;
@@ -203,18 +208,22 @@ function askConfirm({ title, body = "", ok = "OK", danger = false }) {
 
 // ---------------------------------------------------------------- canvas grid
 // cell = width; rows get taller than wide when cells are narrow (phones),
-// so every row stays an easy touch target.
+// so every row stays an easy touch target. Beat groups follow the meter
+// (4, 3, 3+3+2…): a small gap before each beat, a bigger one before a bar.
 const MIN_ROW_H = 30;
-const geo = { cell: 32, cellH: 32 };
+const geo = { cell: 32, cellH: 32, gaps: [] };
 
-function colX(j) { return LABEL_W + j * (geo.cell + GAP) + Math.floor(j / BEAT) * BEAT_EXTRA; }
+function colX(j) { return LABEL_W + j * (geo.cell + GAP) + (geo.gaps[j] || 0); }
 function rowY(i) { return HEADER_H + i * (geo.cellH + GAP); }
 
 function layoutCanvas() {
+  const marks = beatMarks(state.rhythm.meter, state.cols);
+  geo.marks = marks;
+  let extra = 0;
+  geo.gaps = marks.map((m, j) => (extra += j > 0 ? (m === 2 ? BAR_EXTRA : m === 1 ? BEAT_EXTRA : 0) : 0));
   const style = getComputedStyle(gridWrap);
   const avail = gridWrap.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-  const groups = Math.floor((state.cols - 1) / BEAT);
-  const fit = Math.floor((avail - LABEL_W - groups * BEAT_EXTRA) / state.cols) - GAP;
+  const fit = Math.floor((avail - LABEL_W - extra) / state.cols) - GAP;
   geo.cell = clamp(fit, 14, 44);
   geo.cellH = Math.max(geo.cell, Math.min(MIN_ROW_H, 44));
   const w = colX(state.cols - 1) + geo.cell;
@@ -235,40 +244,57 @@ function readPalette() {
   palette = {
     cellOn: v("--cell-on"), cellOff: v("--cell-off"), cellOffBeat: v("--cell-off-beat"),
     step: v("--step-text"), stepBeat: v("--step-text-beat"), stepNow: v("--step-text-now"),
-    label: v("--muted"), bg: v("--bg"),
+    label: v("--muted"), bg: v("--bg"), glyph: v("--on-accent"),
     playLive: v("--playhead-live"),
     playPreview: v("--playhead-preview"), playPreviewLine: v("--playhead-preview-line"),
   };
 }
 
+const GLYPH = Object.fromEntries(FIGURES.map((f) => [f.code, f.glyph]));
+
 function drawGrid() {
   const { cell, cellH } = geo;
+  const marks = geo.marks || [];
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
   // step numbers: every step if there is room, else beat starts only
   ctx.font = "10px -apple-system, Helvetica, sans-serif";
+  const head0 = state.heads[0]?.cell ?? -1;
   for (let j = 0; j < state.cols; j++) {
-    if (cell < 20 && j % BEAT !== 0) continue;
-    ctx.fillStyle = j === state.playhead ? palette.stepNow : (j % BEAT === 0 ? palette.stepBeat : palette.step);
+    if (cell < 20 && !marks[j]) continue;
+    ctx.fillStyle = j === head0 ? palette.stepNow : (marks[j] ? palette.stepBeat : palette.step);
     ctx.fillText(String(j + 1), colX(j) + cell / 2, HEADER_H / 2);
   }
 
-  // row labels (pipe names)
-  ctx.font = "bold 12px -apple-system, Helvetica, sans-serif";
+  // row labels: the pipe, and its own length / rate if it has them
   for (let i = 0; i < state.rows; i++) {
+    const r = state.rhythm.rows[i];
+    const note = [r.len < state.cols ? String(r.len) : "", rateLabel(r.rate)].filter(Boolean).join(" ");
     ctx.fillStyle = state.perm === "pipe" && i === state.myPipe ? palette.stepNow : palette.label;
-    ctx.fillText(pipeName(i), LABEL_W / 2 - 2, rowY(i) + cellH / 2);
+    ctx.font = "bold 12px -apple-system, Helvetica, sans-serif";
+    ctx.fillText(pipeName(i), LABEL_W / 2 - 2, rowY(i) + cellH / 2 - (note ? 5 : 0));
+    if (note) {
+      ctx.font = "9px -apple-system, Helvetica, sans-serif";
+      ctx.fillText(note, LABEL_W / 2 - 2, rowY(i) + cellH / 2 + 7);
+    }
   }
 
+  // cells: a figure's glyph inside; past a row's own length, faded.
   // A guest who owns one pipe sees the other rows dimmed (they can't paint them).
+  ctx.font = `bold ${Math.round(Math.min(cell, cellH) * 0.55)}px -apple-system, Helvetica, sans-serif`;
   for (let i = 0; i < state.rows; i++) {
-    ctx.globalAlpha = mayPaintRow(i) ? 1 : 0.35;
+    const len = state.rhythm.rows[i].len;
     for (let j = 0; j < state.cols; j++) {
-      const on = state.grid[i][j];
-      ctx.fillStyle = on ? palette.cellOn : (j % BEAT === 0 ? palette.cellOffBeat : palette.cellOff);
+      ctx.globalAlpha = (mayPaintRow(i) ? 1 : 0.35) * (j < len ? 1 : 0.3);
+      const v = state.grid[i][j];
+      ctx.fillStyle = v ? palette.cellOn : (marks[j] ? palette.cellOffBeat : palette.cellOff);
       ctx.fillRect(colX(j), rowY(i), cell, cellH);
+      if (v > 1) {
+        ctx.fillStyle = palette.glyph;
+        ctx.fillText(GLYPH[v], colX(j) + cell / 2, rowY(i) + cellH / 2 + 1);
+      }
     }
   }
   ctx.globalAlpha = 1;
@@ -296,16 +322,19 @@ function drawGrid() {
   }
   ctx.lineWidth = 1;
 
-  if (state.playhead >= 0 && state.playhead < state.cols) {
-    const x = colX(state.playhead);
-    const live = isLive();
+  // Each row's own playhead (rows can have their own length and rate).
+  const live = isLive();
+  for (let i = 0; i < state.rows; i++) {
+    const h = state.heads[i];
+    if (!h || h.cell < 0 || h.cell >= state.cols) continue;
+    const x = colX(h.cell);
     ctx.fillStyle = live ? palette.playLive : palette.playPreview;
-    ctx.fillRect(x, rowY(0), cell, rowY(state.rows - 1) + cellH - rowY(0));
+    ctx.fillRect(x, rowY(i), cell, cellH);
     if (!live) {
       // preview playhead is outlined, so it never looks like the organ
       ctx.setLineDash([4, 3]);
       ctx.strokeStyle = palette.playPreviewLine;
-      ctx.strokeRect(x + 0.5, rowY(0) + 0.5, cell - 1, rowY(state.rows - 1) + cellH - rowY(0) - 1);
+      ctx.strokeRect(x + 0.5, rowY(i) + 0.5, cell - 1, cellH - 1);
       ctx.setLineDash([]);
     }
   }
@@ -316,20 +345,25 @@ function cellAt(evt) {
   const rect = canvas.getBoundingClientRect();
   const x = evt.clientX - rect.left;
   const y = evt.clientY - rect.top;
+  const i = Math.floor((y - HEADER_H) / (geo.cellH + GAP));
+  if (i < 0 || i >= state.rows || y < HEADER_H) return null;
+  if (x < LABEL_W - 2) return [i, -1];                 // the row's label
   let j = -1;
   for (let c = 0; c < state.cols; c++) {
     if (x >= colX(c) && x < colX(c) + geo.cell + GAP) { j = c; break; }
   }
-  const i = Math.floor((y - HEADER_H) / (geo.cellH + GAP));
-  if (j < 0 || i < 0 || i >= state.rows || y < HEADER_H) return null;
-  return [i, j];
+  return j < 0 ? null : [i, j];
 }
 
 // Painting with pointer events (mouse, pen and touch). Moves are
-// interpolated so a fast drag fills every cell it crosses.
+// interpolated so a fast drag fills every cell it crosses. An empty cell
+// gets the brush's figure; a drag that starts on a lit cell erases.
+// Right-click (or a long press) cycles a cell through the figures.
 let painting = null;
 let lastCell = null;
 let paintedCells = [];   // [row, col, value] changed by the current gesture
+let pressTimer = null;
+let pressStart = null;
 
 function paintLine(from, to) {
   const [i0, j0] = from;
@@ -339,13 +373,22 @@ function paintLine(from, to) {
   for (let k = 1; k <= n; k++) {
     const i = Math.round(i0 + ((i1 - i0) * k) / n);
     const j = Math.round(j0 + ((j1 - j0) * k) / n);
-    if (mayPaintRow(i) && state.grid[i][j] !== painting) {
+    if (j >= 0 && mayPaintRow(i) && state.grid[i][j] !== painting) {
       state.grid[i][j] = painting;
       paintedCells.push([i, j, painting]);
       changed = true;
     }
   }
   return changed;
+}
+
+const FIGURE_ORDER = FIGURES.map((f) => f.code);
+function cycleFigure(i, j) {
+  const v = state.grid[i][j];
+  const next = v ? FIGURE_ORDER[(FIGURE_ORDER.indexOf(v) + 1) % FIGURE_ORDER.length] : state.brush;
+  state.grid[i][j] = next;
+  paintedCells.push([i, j, next]);
+  onGridChanged();
 }
 
 // After painting: shared session -> send just the painted cells.
@@ -376,23 +419,41 @@ function redrawPattern() {
 canvas.addEventListener("pointerdown", (e) => {
   const c = cellAt(e); if (!c) return;
   e.preventDefault();
+  if (c[1] < 0) { if (conducts()) openRowDialog(c[0]); return; }
   if (!mayPaintRow(c[0])) { toast(`You paint pipe ${pipeName(state.myPipe)}: the host gave you that row`); return; }
+  if (e.button === 2) { cycleFigure(c[0], c[1]); return; }
   canvas.setPointerCapture(e.pointerId);
-  painting = e.button === 2 ? 0 : 1 - state.grid[c[0]][c[1]];
+  const before = state.grid[c[0]][c[1]];
+  painting = before ? 0 : state.brush;
   state.grid[c[0]][c[1]] = painting;
   paintedCells.push([c[0], c[1], painting]);
   lastCell = c;
   onGridChanged();
+  // Touch: hold still on a cell to cycle its figure instead.
+  if (e.pointerType === "touch") {
+    pressStart = { x: e.clientX, y: e.clientY };
+    clearTimeout(pressTimer);
+    pressTimer = setTimeout(() => {
+      state.grid[c[0]][c[1]] = before;
+      painting = null;
+      cycleFigure(c[0], c[1]);
+      navigator.vibrate?.(15);
+    }, 500);
+  }
 });
 canvas.addEventListener("pointermove", (e) => {
+  if (pressStart && Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) > 8) {
+    clearTimeout(pressTimer);
+    pressStart = null;
+  }
   if (painting === null) return;
-  const c = cellAt(e); if (!c) return;
+  const c = cellAt(e); if (!c || c[1] < 0) return;
   if (c[0] === lastCell[0] && c[1] === lastCell[1]) return;
   const changed = paintLine(lastCell, c);
   lastCell = c;
   if (changed) onGridChanged();
 });
-const endPaint = () => { painting = null; lastCell = null; };
+const endPaint = () => { painting = null; lastCell = null; clearTimeout(pressTimer); pressStart = null; };
 canvas.addEventListener("pointerup", endPaint);
 canvas.addEventListener("pointercancel", endPaint);
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -458,10 +519,11 @@ function renderPeers() {
       c.style.width = `${cellW}%`;
       strip.appendChild(c);
     });
-    if (state.playhead >= 0 && state.playhead < row.length) {
+    const head = state.heads[i]?.cell ?? -1;
+    if (head >= 0 && head < row.length) {
       const h = document.createElement("div");
       h.className = "head";
-      h.style.left = `${state.playhead * cellW}%`;
+      h.style.left = `${head * cellW}%`;
       h.style.width = `${cellW}%`;
       strip.appendChild(h);
     }
@@ -645,7 +707,11 @@ function flushPattern() {
     state.sending = true;
     renderTruth();
     try {
-      const seq = await backend.sendPattern(state.tempo, organGrid());
+      // A 1.4 hub gets figures, lengths and rates; an older one plain rows.
+      const seq = backend.sendPattern2 && !organIsPlain()
+        ? await backend.sendPattern2(state.tempo, organRows())
+        : await backend.sendPattern(state.tempo, organGrid());
+      if (organIsPlain()) warnPlainOrgan();
       if (seq !== null) state.sentSeq = seq;
       state.sendError = null;
     } catch (e) {
@@ -692,7 +758,7 @@ function scheduleReplace() {
   clearTimeout(replaceTimer);
   replaceTimer = setTimeout(async () => {
     try {
-      await backend.replacePattern(state.tempo, state.grid.map((row) => row.slice()), state.you);
+      await backend.replacePattern(state.tempo, state.grid.map((row) => row.slice()), state.you, state.rhythm);
     } catch (e) {
       toast("Change not shared: " + e.message, "err");
     }
@@ -715,7 +781,7 @@ function applyCells(ev) {
 }
 
 function applyPattern(ev) {
-  adoptPattern(ev.tempo, ev.grid);
+  adoptPattern(ev.tempo, ev.grid, ev.rhythm);
   state.rev = ev.rev;
   persistWorking();
 }
@@ -757,39 +823,97 @@ async function stop() {
   }
 }
 
+// The master step count: from the hub's STEP lines, or the preview. Each
+// row works out its own place from it (rhythm.js), between steps too.
 function setPlayhead(step) {
   if (room && step !== state.playhead) room.step(step);
   state.playhead = step;
   if (step >= 0) state.lastStepAt = Date.now();
-  drawGrid();
-  renderPeers();
-  updateSoundGates();
+  updateHeads(true);
+  if (step >= 0) runClock();
 }
 
 // ---- play window: loop only part of the pattern (gestures set it)
 const playWindow = () => state.window || { start: 0, length: state.cols };
 
-// What the organ gets: the steps in the window.
+// What a row plays: its own length, cut to the play window if there is one.
+function effRow(i) {
+  const len = state.rhythm.rows[i]?.len || state.cols;
+  const { start, length } = playWindow();
+  if (!state.window || start >= len) return { offset: 0, len };
+  return { offset: start, len: Math.max(1, Math.min(length, len - start)) };
+}
+
+// An organ older than 1.4 plays plain rows (one length, one rate, on/off):
+// show what it really does.
+const organIsPlain = () => isLive() && hubFw && compareVersions(hubFw, "1.4") < 0;
+
+// What the organ gets. 1.4+: each row's figures, length and rate (PAT2).
+// Older: the steps in the window, on/off.
 function organGrid() {
   const { start, length } = playWindow();
   return state.grid.map((row) => row.slice(start, start + length));
 }
-// The organ's step n -> the grid column.
-const organStepToCol = (n) => (playWindow().start + n) % state.cols;
+function organRows() {
+  return state.grid.map((row, i) => {
+    const { offset, len } = effRow(i);
+    const [num, den] = rateFraction(state.rhythm.rows[i].rate, state.tempo);
+    return { len, num, den, cells: row.slice(offset, offset + len) };
+  });
+}
+
+// Where every row is now: master position × its rate -> cell, phase, open.
+function updateHeads(force = false) {
+  const stepMs = 60000 / state.tempo;
+  const playing = state.playhead >= 0;
+  const pos = playing ? state.playhead + clamp((Date.now() - state.lastStepAt) / stepMs, 0, 0.999) : -1;
+  const plain = organIsPlain();
+  let changed = force;
+  for (let i = 0; i < state.rows; i++) {
+    let h = { cell: -1, open: false };
+    if (playing) {
+      const { offset, len } = plain ? { offset: playWindow().start, len: playWindow().length } : effRow(i);
+      const cells = state.grid[i].slice(offset, offset + len).map((v) => (plain && v ? FIG.FULL : v));
+      const r = rowAt(cells, len, plain ? null : state.rhythm.rows[i].rate, state.tempo, pos);
+      h = { cell: offset + r.cell, open: r.open };
+    }
+    const old = state.heads[i];
+    if (!old || old.cell !== h.cell || old.open !== h.open) changed = true;
+    state.heads[i] = h;
+  }
+  state.heads.length = state.rows;
+  if (!changed) return;
+  drawGrid();
+  renderPeers();
+  updateSoundGates();
+}
+
+let clockRaf = 0;
+function runClock() {
+  if (clockRaf) return;
+  const frame = () => {
+    clockRaf = 0;
+    updateHeads();
+    if (state.playhead >= 0) clockRaf = requestAnimationFrame(frame);
+  };
+  clockRaf = requestAnimationFrame(frame);
+}
 
 function setPlayWindow(start, length) {
   length = clamp(Math.round(length), 1, state.cols);
   const w = length < state.cols ? { start: clamp(Math.round(start), 0, state.cols - length), length } : null;
   if (JSON.stringify(w) === JSON.stringify(state.window)) return;
   state.window = w;
-  // A new length waits for the organ's bar to come round; a new start is the next step.
+  // Each pipe takes its new row at the right moment (a new length: when its row comes round).
   if (state.connected && !state.shared) schedulePatternSend();
+  relayOrgan();
   drawGrid();
   renderTruth();
 }
 
 // Preview: only when not connected, and drawn differently from the real one.
-// It reads the tempo and the window on every step, so gestures can bend it.
+// A master step count like the hub's; it reads the tempo on every step, so
+// gestures can bend it.
 let previewTimer = null;
 let previewStep = -1;
 function startPreview() {
@@ -800,10 +924,7 @@ function startPreview() {
   renderTruth();
 }
 function tickPreview() {
-  const { start, length } = playWindow();
-  const rel = previewStep - start;
-  previewStep = rel >= 0 && rel < length - 1 ? previewStep + 1 : start;
-  setPlayhead(previewStep);
+  setPlayhead(++previewStep);
   previewTimer = setTimeout(tickPreview, Math.max(20, Math.floor(60000 / state.tempo)));
 }
 function stopPreview() {
@@ -814,14 +935,17 @@ function stopPreview() {
   renderTruth();
 }
 
-function adoptPattern(tempo, grid) {
+function adoptPattern(tempo, grid, rhythm = null) {
+  const oldCols = state.cols;
   state.rows = grid.length;
   state.cols = grid[0].length;
   state.tempo = tempo;
   state.grid = grid.map((row) => row.slice());
+  state.rhythm = fitRhythm(rhythm || defaultRhythm(state.rows, state.cols), state.rows, state.cols, rhythm ? state.cols : oldCols);
   rowsInput.value = state.rows;
   colsInput.value = state.cols;
   tempoInput.value = state.tempo;
+  $("meterSelect").value = meterOption(state.rhythm.meter);
   relayout();
 }
 
@@ -833,7 +957,7 @@ function persistWorking() {
   persistTimer = setTimeout(() => {
     try {
       localStorage.setItem(WORKING_KEY, JSON.stringify({
-        tempo: state.tempo, grid: state.grid,
+        tempo: state.tempo, grid: state.grid, rhythm: state.rhythm,
         presetName: state.presetName, savedKey: state.savedKey,
       }));
     } catch (_) { /* storage blocked: nothing to do */ }
@@ -844,7 +968,7 @@ function restoreWorking() {
     const w = JSON.parse(localStorage.getItem(WORKING_KEY));
     if (!w) return;
     validatePattern(w.tempo, w.grid);
-    adoptPattern(w.tempo, w.grid);
+    adoptPattern(w.tempo, w.grid, w.rhythm);
     state.presetName = w.presetName || "";
     state.savedKey = w.savedKey ?? null;
   } catch (_) { /* nothing saved, or from an incompatible version */ }
@@ -890,7 +1014,7 @@ async function loadPreset(name) {
   }
   try {
     const p = await backend.presets.load(name);
-    adoptPattern(p.tempo, p.grid);
+    adoptPattern(p.tempo, p.grid, p.rhythm);
     markSaved(name);
     commitWhole();
     renderTruth();
@@ -935,7 +1059,7 @@ async function savePreset() {
   });
   if (!name) return;
   try {
-    await backend.presets.save(name, { tempo: state.tempo, grid: state.grid });
+    await backend.presets.save(name, { tempo: state.tempo, grid: state.grid, rhythm: state.rhythm });
     markSaved(name);
     persistWorking();
     await refreshPresets();
@@ -955,7 +1079,7 @@ async function exportPresets() {
     const presets = {};
     for (const n of names) {
       const p = await backend.presets.load(n);
-      presets[n] = { tempo: p.tempo, grid: p.grid };
+      presets[n] = { tempo: p.tempo, grid: p.grid, ...(p.rhythm ? { rhythm: p.rhythm } : {}) };
     }
     const blob = new Blob([JSON.stringify({ format: EXPORT_FORMAT, version: 1, presets }, null, 2)],
                           { type: "application/json" });
@@ -1241,6 +1365,7 @@ function onStatus(ev) {
   state.demo = !!ev.demo;
   state.port = ev.port || null;
   if (typeof ev.playing === "boolean") state.playing = ev.playing;
+  if ("window" in ev && inRoomAsGuest()) { state.window = ev.window; drawGrid(); }
   connectBtn.textContent = state.connected ? "Disconnect" : "Connect";
   connectBtn.classList.toggle("connected", state.connected);
   showConnectedPort();
@@ -1279,7 +1404,7 @@ function onBackendEvent(ev) {
         // A room guest also follows the host's preview playhead.
         if (!state.connected && !inRoomAsGuest()) break;
         state.lastStepAt = Date.now();
-        setPlayhead(inRoomAsGuest() ? ev.step : organStepToCol(ev.step));
+        setPlayhead(ev.step);
         break;
       case "transport":
         state.playing = !!ev.playing;
@@ -1300,6 +1425,7 @@ function onBackendEvent(ev) {
         updateLive();
         break;
       case "hub":
+        if (hubFw !== ev.fw && state.connected && !state.shared) schedulePatternSend();
         hubFw = ev.fw;
         if (hubPlaysLive() && state.live) backend.sendNotes(state.live);
         renderMidi();
@@ -1381,7 +1507,8 @@ function onBackendEvent(ev) {
 function applyRole() {
   const guest = state.role === "guest";
   document.body.dataset.role = guest && state.perm === "cohost" ? "cohost" : state.role;
-  for (const el of [rowsInput, colsInput, tempoInput]) el.disabled = !conducts();
+  for (const el of [rowsInput, colsInput, tempoInput, $("meterSelect")]) el.disabled = !conducts();
+  buildBrushes();
   // Simulated sound needs a secure page (a room guest's page is; a Wi-Fi guest's isn't).
   $("stageWrap").hidden = guest && !window.isSecureContext;
   logWrap.hidden = guest;
@@ -1392,7 +1519,8 @@ function applyRole() {
   shareBtn.hidden = guest || !backend;
   shareBtn.textContent = state.shared ? "Share…" : "Play together…";
   $("gridHint").textContent = !guest
-    ? "Click or drag to paint · drag from a lit cell to erase · Space = play/stop · C = clear"
+    ? "Click or drag to paint (with the figure above) · drag from a lit cell to erase · right-click a cell to change its figure · "
+      + "click a pipe's letter for its own length and speed · Space = play/stop · C = clear"
     : state.perm === "pipe"
       ? `Tap or drag along pipe ${pipeName(state.myPipe)}'s row to paint · drag from a lit cell to erase.`
       : "Tap or drag to paint · drag from a lit cell to erase. Everyone here sees your changes."
@@ -1572,7 +1700,7 @@ function organStatus() {
     connected: state.connected, demo: state.demo, playing: state.playing,
     port: state.demo ? "demo organ" : state.port,
     seq: state.sentSeq, sending: state.sending || state.dirty, error: state.sendError,
-    live: state.live,
+    live: state.live, window: state.window,
   };
 }
 
@@ -1591,14 +1719,14 @@ let roomPatternTimer = null;
 function scheduleRoomPattern() {
   clearTimeout(roomPatternTimer);
   roomPatternTimer = setTimeout(() => {
-    room?.pattern(state.tempo, state.grid.map((row) => row.slice()), state.you);
+    room?.pattern(state.tempo, state.grid.map((row) => row.slice()), state.you, state.rhythm);
   }, SEND_DEBOUNCE_MS);
 }
 
 function roomHooks() {
   return {
     getSnapshot: () => ({
-      session: { tempo: state.tempo, grid: state.grid, rev: room?.rev ?? 0 },
+      session: { tempo: state.tempo, grid: state.grid, rhythm: state.rhythm, rev: room?.rev ?? 0 },
       organ: organStatus(),
     }),
     getSize: () => ({ rows: state.rows, cols: state.cols }),
@@ -1615,8 +1743,8 @@ function roomHooks() {
       schedulePatternSend();
       room.cells(cells, user.id);
     },
-    onReplace: (tempo, grid) => {
-      adoptPattern(tempo, grid);
+    onReplace: (tempo, grid, user, rhythm) => {
+      adoptPattern(tempo, grid, rhythm);
       commitWhole();
     },
     onTransport: (action) => (action === "play" ? play() : stop()),
@@ -1795,7 +1923,7 @@ async function becomeHost(ev) {
   $("modeName").textContent = "online";
   $("usbWarning").hidden = backend.usbSupported;
   history.replaceState(null, "", location.pathname);
-  adoptPattern(ev.session.tempo, ev.session.grid);
+  adoptPattern(ev.session.tempo, ev.session.grid, ev.session.rhythm);
   knownUsers = ev.users || [];
   backend.start();
   try {
@@ -1884,7 +2012,7 @@ function saveStage() {
 // Open by the pattern, or held by a MIDI key.
 function pipeOpen(i) {
   if (i >= state.rows) return false;
-  return (state.playhead >= 0 && state.grid[i]?.[state.playhead] === 1) || ((state.live >> i) & 1) === 1;
+  return !!state.heads[i]?.open || ((state.live >> i) & 1) === 1;
 }
 
 function updateSoundGates() {
@@ -2292,7 +2420,7 @@ function onMidi(device, msg) {
     case "clear": clearBtn.click(); break;
     case "cell":
       if (!mayPaintRow(action.row)) break;
-      state.grid[action.row][action.col] ^= 1;
+      state.grid[action.row][action.col] = state.grid[action.row][action.col] ? 0 : state.brush;
       paintedCells.push([action.row, action.col, state.grid[action.row][action.col]]);
       onGridChanged();
       break;
@@ -2361,14 +2489,22 @@ function renderRecord() {
   b.hidden = !(midiStore.on && midiDevices.length) && !state.recording;
 }
 
+// The key lands on this row's own step (its length and rate): the one it's
+// in, or the next if pressed late in it. It's written with the brush's figure.
 function recordPipe(pipe) {
   if (!state.playing || state.playhead < 0 || !mayPaintRow(pipe) || pipe >= state.rows) return;
-  const { start, length } = playWindow();
-  if (state.playhead < start || state.playhead >= start + length) return;   // the loop just moved
-  const col = start + recordStep(state.playhead - start, state.lastStepAt, 60000 / state.tempo, Date.now(), length);
-  if (state.grid[pipe][col] === 1) return;
-  state.grid[pipe][col] = 1;
-  paintedCells.push([pipe, col, 1]);
+  const h = state.heads[pipe];
+  if (!h || h.cell < 0) return;
+  const { offset, len } = effRow(pipe);
+  const stepMs = 60000 / state.tempo;
+  const pos = (state.playhead + clamp((Date.now() - state.lastStepAt) / stepMs, 0, 0.999))
+    * (state.rhythm.rows[pipe].rate.bpm ? state.rhythm.rows[pipe].rate.bpm / state.tempo
+      : state.rhythm.rows[pipe].rate.num / state.rhythm.rows[pipe].rate.den);
+  const late = pos - Math.floor(pos) > 0.5;
+  const col = offset + ((h.cell - offset + (late ? 1 : 0)) % len);
+  if (state.grid[pipe][col]) return;
+  state.grid[pipe][col] = state.brush;
+  paintedCells.push([pipe, col, state.brush]);
   onGridChanged();
 }
 
@@ -2382,14 +2518,14 @@ function schedulePads() {
 
 function renderPads() {
   const pages = Math.max(1, Math.ceil(state.cols / 8));
-  if (padFollow && state.playhead >= 0) padPage = Math.floor(state.playhead / 8);
+  if (padFollow && (state.heads[0]?.cell ?? -1) >= 0) padPage = Math.floor(state.heads[0].cell / 8);
   padPage = clamp(padPage, 0, pages - 1);
   for (const d of midiDevices) {
     const s = settingsFor(d.name);
     if (!d.profile || !d.output || !s.enabled || s.mode !== "grid") continue;
     if (d.profile.sysex && !midiPorts.sysex) continue;
     const frame = gridFrame({ grid: state.grid, rows: state.rows, cols: state.cols,
-                              playhead: state.playhead, page: padPage, live: state.live });
+                              heads: state.heads.map((h) => h?.cell ?? -1), page: padPage, live: state.live });
     for (const bytes of ledMessages(d.profile, frame, d.lastFrame)) midiPorts.send(d, bytes);
     d.lastFrame = frame;
   }
@@ -3050,6 +3186,145 @@ systemLight.addEventListener("change", () => {
   if ((document.documentElement.dataset.themePref || "auto") === "auto") applyTheme("auto");
 });
 
+// ---------------------------------------------------------------- figures & rhythm
+// The brush (what painting puts in a cell), the meter (beat grouping), and
+// each pipe's own length and speed (click its letter). rhythm.js has the rules.
+const figuresSupported = () => backend?.kind !== "local";      // the local app plays on/off only
+
+function buildBrushes() {
+  const box = $("brushes");
+  box.innerHTML = "";
+  for (const f of FIGURES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(state.brush === f.code));
+    b.title = `${f.name}: ${f.help}`;
+    b.setAttribute("aria-label", f.name);
+    b.innerHTML = `<span>${f.glyph || "■"}</span><span class="nm"></span>`;
+    b.querySelector(".nm").textContent = f.name;
+    b.addEventListener("click", () => { state.brush = f.code; buildBrushes(); warnFastFigure(f.code); });
+    box.appendChild(b);
+  }
+  box.hidden = !figuresSupported();
+}
+
+const meterOption = (m) => meterText(m);
+function buildMeterSelect() {
+  const sel = $("meterSelect");
+  sel.innerHTML = "";
+  const current = meterText(state.rhythm.meter);
+  for (const m of METERS.includes(current) ? METERS : [...METERS, current]) sel.add(new Option(m.replaceAll("+", " + "), m));
+  sel.add(new Option("Other…", "__other__"));
+  sel.value = current;
+}
+$("meterSelect").addEventListener("change", async () => {
+  const sel = $("meterSelect");
+  let text = sel.value;
+  if (text === "__other__") {
+    text = await askText({
+      label: "Beat grouping: steps per beat, joined with + (e.g. 2+2+3)",
+      value: meterText(state.rhythm.meter),
+      validate: (v) => (parseMeter(v) ? null : "numbers 1–16 joined with +, 32 steps at most"),
+    });
+  }
+  const m = text && parseMeter(text);
+  if (m) state.rhythm.meter = m;
+  buildMeterSelect();
+  relayout();
+  commitWhole();
+});
+
+// ---- one pipe's rhythm: length and speed
+let rowEditing = -1;
+function openRowDialog(i) {
+  if (!figuresSupported()) { toast("The local app plays every pipe at one speed: use the online version for this"); return; }
+  rowEditing = i;
+  const sel = $("rowRatio");
+  if (!sel.options.length) for (const [n, d] of RATIOS) if (n !== d) sel.add(new Option(`${n}:${d}`, `${n}/${d}`));
+  renderRowDialog();
+  $("rowDialog").showModal();
+}
+
+function renderRowDialog() {
+  const i = rowEditing;
+  const r = state.rhythm.rows[i];
+  if (!r) return;
+  $("rowTitle").textContent = `Pipe ${pipeName(i)}: its own rhythm`;
+  $("rowLen").max = state.cols;
+  $("rowLen").value = r.len;
+  $("rowLenNote").textContent = r.len < state.cols ? `(the grid has ${state.cols})` : "(the whole grid)";
+  const kind = r.rate.bpm ? "bpm" : r.rate.num === r.rate.den ? "same" : "ratio";
+  for (const x of document.querySelectorAll("input[name=rateKind]")) x.checked = x.value === kind;
+  $("rowRatio").value = kind === "ratio" ? `${r.rate.num}/${r.rate.den}` : "3/2";
+  $("rowBpm").value = r.rate.bpm || state.tempo;
+  const speed = r.rate.bpm ? r.rate.bpm / state.tempo : r.rate.num / r.rate.den;
+  const parts = [];
+  if (r.len < state.cols) parts.push(`It loops ${r.len} steps while the grid has ${state.cols}, so it shifts against the others and comes back in line every ${lcm(r.len, state.cols)} steps.`);
+  if (kind === "ratio") parts.push(`It plays ${r.rate.num} steps in the time of ${r.rate.den} master steps.`);
+  if (kind === "bpm") parts.push(`It runs at ${r.rate.bpm} steps/min against ${state.tempo}: it drifts slowly in and out of step with the others (phasing).`);
+  if (speed > 1) {
+    const fastest = Math.min(...state.grid[i].slice(0, r.len).filter(Boolean).map((v) => shortestMs(v, 60000 / state.tempo / speed)));
+    if (fastest < MIN_VALVE_MS) parts.push(`Careful: some figures ask the valve to move every ${Math.round(fastest)} ms at this speed.`);
+  }
+  $("rowExplain").textContent = parts.join(" ") || "Same length and speed as the grid.";
+}
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+const lcm = (a, b) => (a * b) / gcd(a, b);
+
+function setRowRhythm(change) {
+  const r = state.rhythm.rows[rowEditing];
+  if (!r) return;
+  Object.assign(r, change);
+  r.len = clamp(r.len, 1, state.cols);
+  r.rate = cleanRate(r.rate);
+  renderRowDialog();
+  drawGrid();
+  commitWhole();
+}
+$("rowLen").addEventListener("change", () => setRowRhythm({ len: parseInt($("rowLen").value, 10) || state.cols }));
+function rateFromDialog() {
+  const kind = document.querySelector("input[name=rateKind]:checked")?.value;
+  if (kind === "ratio") { const [num, den] = $("rowRatio").value.split("/").map(Number); return { num, den }; }
+  if (kind === "bpm") return { bpm: parseInt($("rowBpm").value, 10) || state.tempo };
+  return { num: 1, den: 1 };
+}
+for (const x of document.querySelectorAll("input[name=rateKind]")) x.addEventListener("change", () => setRowRhythm({ rate: rateFromDialog() }));
+$("rowRatio").addEventListener("change", () => {
+  document.querySelector("input[name=rateKind][value=ratio]").checked = true;
+  setRowRhythm({ rate: rateFromDialog() });
+});
+$("rowBpm").addEventListener("change", () => {
+  document.querySelector("input[name=rateKind][value=bpm]").checked = true;
+  setRowRhythm({ rate: rateFromDialog() });
+});
+$("rowReset").addEventListener("click", () => setRowRhythm({ len: state.cols, rate: { num: 1, den: 1 } }));
+
+// ---- warnings
+// A solenoid needs some time to open and close: warn when a figure asks for
+// quicker than this (a guess until measured on the real pipes).
+const MIN_VALVE_MS = 25;
+let fastWarned = false;
+function warnFastFigure(code) {
+  if (fastWarned) return;
+  const ms = shortestMs(code, 60000 / state.tempo);
+  if (ms >= MIN_VALVE_MS) return;
+  fastWarned = true;
+  toast(`At ${state.tempo} steps/min this figure asks the valve to move every ${Math.round(ms)} ms: the pipes may not keep up.`, "warn");
+}
+
+let plainWarned = false;
+function warnPlainOrgan() {
+  const fancy = !isPlain(state.rhythm) || state.grid.some((row) => row.some((v) => v > 1));
+  if (!fancy || plainWarned) return;
+  plainWarned = true;
+  toast("The hub and pipes need firmware 1.4 for figures and per-pipe rhythm (More ▾ → Boards). "
+    + "Until then the organ plays every lit cell as a full step, all at one speed.", "warn");
+}
+
+buildBrushes();
+buildMeterSelect();
+
 // ---------------------------------------------------------------- settings
 function relayout() {
   layoutCanvas();
@@ -3063,10 +3338,10 @@ function setRowsCols(rows, cols) {
   for (let i = 0; i < Math.min(rows, state.rows); i++) {
     for (let j = 0; j < Math.min(cols, state.cols); j++) newGrid[i][j] = state.grid[i][j];
   }
+  state.rhythm = fitRhythm(state.rhythm, rows, cols, state.cols);
   state.rows = rows;
   state.cols = cols;
   state.grid = newGrid;
-  if (state.playhead >= cols) state.playhead = -1;
   if (state.window) { const w = state.window; state.window = null; setPlayWindow(w.start, w.length); }
   relayout();
   commitWhole();

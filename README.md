@@ -1,4 +1,4 @@
-# Calum Organ — Pipe Madness v1.3
+# Calum Organ — Pipe Madness v1.4
 
 A step sequencer that drives a pipe organ built from solenoid valves. You
 draw a rhythm grid in the browser: each row is a pipe (A–H), each column a
@@ -98,6 +98,48 @@ start of the next bar so the rhythm doesn't stumble.
 - If the sender reboots, the app notices and resends the pattern.
 - Reloading the page or opening a second tab shows what the organ is
   playing; it never overwrites it with a blank grid.
+
+## Figures, each pipe's own rhythm, and meter
+
+**Figures (articulation).** A lit cell can play a figure inside its step.
+Pick one in the row of buttons above the grid; painting an empty cell puts
+it there. Right-click a cell (or hold a finger on it) to change its figure.
+
+| Figure | The valve… |
+|---|---|
+| ■ full | open the whole step; full steps side by side are one long note |
+| ◐ detached | open most of the step, so the next note starts again |
+| · staccato | short |
+| ⁚ ⁝ ⁞ 2 / 3 / 4 repeats | quick notes inside the step (3 = a triplet) |
+| ◑ offbeat | only the second half of the step |
+
+A solenoid needs time to open and close: the app warns when a figure, at
+the current tempo and speed, asks it to move faster than about 25 ms (a
+guess until measured on the real pipes).
+
+**Each pipe's own rhythm.** Click a pipe's letter (left of the grid):
+
+- **Length**: the row can loop fewer steps than the grid, e.g. A 16, B 12,
+  C 7 (polymeter): they shift against each other and come back in line.
+  Steps past a row's length are faded.
+- **Speed**: same as everyone, a **ratio** to the master beat (1:2, 2:3,
+  3:4, 4:5, 5:4, 4:3, 3:2, 2:1: polyrhythm), or **its own tempo** (e.g. 121
+  against 120: it drifts in and out of step, like Steve Reich's phasing).
+
+The letter shows the row's length and speed; each row has its own playhead.
+The master tempo stays the reference everything is measured against.
+
+**Meter.** *Beat* (next to Steps) groups the steps: 4, 3, 2, 5, 7, or
+additive groupings such as 3+3+2 and 2+2+3 (or type your own). It draws
+the beat lines; tuplets within a beat come from the repeat figures, and
+across pipes from their speeds.
+
+The hub keeps one master beat and counts steps; each pipe works out where
+it is from that count and its own speed, between beats too, so everything
+stays locked and lines up again where it should. Figures and per-pipe
+rhythm need **firmware 1.4 on the hub and every pipe** (More ▾ → Boards);
+with an older hub the organ plays every lit cell as a full step, all at one
+speed, and the app says so. The local app plays on/off at one speed only.
 
 ## MIDI keyboards and pads
 
@@ -397,6 +439,7 @@ Line-based ASCII over USB serial, 115200 baud:
 
 ```
 host → hub:  PAT <tempo> <rows> <cols> <row0bits> ... <rowNbits>
+             PAT2 <tempo> <rows> <len>/<num>/<den>/<figures> ...       (1.4+)
              PLAY   STOP   PING   PIPES   INFO   NOTE <mask>
 hub → host:  OK PAT <seq>   ACK <peer> <seq>   NAK <peer> <seq>
              OK PLAY   OK STOP   OK READY   PONG   STEP <n>   ERR <reason>
@@ -406,7 +449,10 @@ host → pipe: INFO   PIPE <A..H|->   TEST
 pipe → host: INFO pipe <letter> fw <version> mac <mac>   OK PIPE <letter>   OK TEST
 ```
 
-`NOTE <mask>` (live notes: bit i = pipe i held) gets no reply, so it never
+`PAT2` gives each row its length, its speed as num/den of the master beat,
+and a figure digit 0–7 per step (0 off, 1 full, 2 detached, 3 staccato,
+4–6 repeats, 7 offbeat). From 1.4 `STEP <n>` counts on from Play without
+wrapping; each pipe wraps its own row. `NOTE <mask>` (live notes: bit i = pipe i held) gets no reply, so it never
 waits behind a pattern. `PIPE` lines come when the hub finds a pipe (and in answer to `PIPES`);
 `old` means a 1.1 pipe from its built-in list. `DUP` means a second board
 claims a letter. A NAK for a pipe no board has claimed comes at once.
@@ -448,6 +494,7 @@ calum-organ/
 │       ├── js/backends.js  # local app vs online (Web Serial / demo)
 │       ├── js/room.js      # online rooms: host hub, guest backend, roles
 │       ├── js/boards.js    # Boards panel: identify, install, set pipe letter
+│       ├── js/rhythm.js    # figures, per-pipe length and speed, meter (as in the firmware)
 │       ├── js/midi.js      # MIDI: devices, mapping, learn, pad-grid LEDs
 │       ├── js/mlp.js       # gestures: learn poses by example (small MLP)
 │       ├── js/motion.js    # gestures: phone motion, PS5 controller (WebHID), gamepads
@@ -506,6 +553,10 @@ calum-organ/
   pattern, MIDI learn, record into the grid). Firmware: live notes.
   Gestures: teach poses with a phone, a PS5 controller or a gamepad, and
   play the pipes by moving; room guests play from their own phones.
+- v1.4 (Oct 2026): figures inside a step (detached, staccato, repeats,
+  offbeat), each pipe's own length and speed (polymeter, polyrhythm,
+  phasing tempos), meters beyond 4 (3+3+2…). Firmware 1.4: the hub counts
+  steps, each pipe times its own row and figures.
 
 ## Credits and licences
 

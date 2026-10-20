@@ -85,3 +85,21 @@ def test_live_notes_cannot_stick():
     assert "NOTE_TIMEOUT_MS" in pipe and "live_open = false;" in pipe
     # the valve is driven in one place only
     assert pipe.count("digitalWrite(RELAY_PIN") == 2, "apply_valve() and close_valve() only"
+
+
+def test_rhythm_14_matches_the_app():
+    # 1.4: figures, per-pipe length and rate, a step count that never wraps.
+    peers = (FW / "calum_sender" / "peers.h").read_text()
+    hub = (FW / "calum_sender" / "calum_sender.ino").read_text()
+    pipe = (FW / "calum_receiver" / "calum_receiver.ino").read_text()
+    js = (STATIC / "js" / "rhythm.js").read_text()
+    # the same figure codes and timings in C and JS
+    for name, code in (("FULL", 1), ("DETACHED", 2), ("STACCATO", 3), ("REP2", 4), ("REP3", 5), ("REP4", 6), ("OFFBEAT", 7)):
+        assert re.search(rf"FIG_{name} = {code}\b", peers), name
+        assert re.search(rf"\b{name}: {code}\b", js), name
+    for c_rule, js_rule in (("phase < 0.85", "phase < 0.85"), ("phase < 0.3", "phase < 0.3"), ("phase >= 0.5", "phase >= 0.5")):
+        assert c_rule in peers and js_rule in js
+    assert "uint32_t count;" in peers and "rate_num" in peers and "pattern[12]" in peers
+    assert '"PAT2"' in hub and "handle_pat2" in hub and "tick.count = count;" in hub
+    assert "service_play(now)" in pipe and "figure_open(get_figure(front.pattern, cell), phase)" in pipe
+    assert "#define PIPE_MAGIC 0xC1" in peers

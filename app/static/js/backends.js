@@ -54,6 +54,8 @@ export class JoinError extends Error {
   constructor() { super("join code needed"); }
 }
 
+const onOff = (grid) => grid.map((row) => row.map((v) => (v ? 1 : 0)));
+
 async function api(path, options = {}) {
   const opts = { ...options };
   if (opts.body !== undefined && typeof opts.body !== "string") {
@@ -127,9 +129,12 @@ export class LocalBackend {
   // Shared session: painting is sent as cells, so simultaneous painters
   // don't overwrite each other; the host replaces the whole pattern for
   // settings, presets and Clear. The server sends the result to the organ.
-  sendCells(cells, by) { return api("api/session/cells", { method: "POST", body: { cells, by } }); }
+  // The local app plays on/off only (no figures or per-pipe rhythm).
+  sendCells(cells, by) {
+    return api("api/session/cells", { method: "POST", body: { cells: cells.map(([i, j, v]) => [i, j, v ? 1 : 0]), by } });
+  }
   replacePattern(tempo, grid, by) {
-    return api("api/session/pattern", { method: "POST", body: { tempo, grid, by } });
+    return api("api/session/pattern", { method: "POST", body: { tempo, grid: onOff(grid), by } });
   }
   shareInfo() { return api("api/share"); }
   share(on) { return api("api/share", { method: "POST", body: { on } }); }
@@ -150,7 +155,7 @@ export class LocalBackend {
     list: () => api("api/presets"),
     load: (name) => api(`api/presets/${encodeURIComponent(name)}`),
     save: (name, p) => api(`api/presets/${encodeURIComponent(name)}`,
-                           { method: "POST", body: { tempo: p.tempo, grid: p.grid } }),
+                           { method: "POST", body: { tempo: p.tempo, grid: onOff(p.grid) } }),
     remove: (name) => api(`api/presets/${encodeURIComponent(name)}`, { method: "DELETE" }),
   };
 }
@@ -250,6 +255,7 @@ export class OnlineBackend {
 
   disconnect() { return this.link.close(); }
   sendPattern(tempo, grid) { return this.link.sendPattern(tempo, grid); }
+  sendPattern2(tempo, rows) { return this.link.sendPattern2(tempo, rows); }
   play() { return this.link.sendPlay(); }
   stop() { return this.link.sendStop(); }
 
@@ -259,12 +265,12 @@ export class OnlineBackend {
       const p = readPresets()[name];
       if (!p) throw new Error("not found");
       validatePattern(p.tempo, p.grid);
-      return { name, tempo: p.tempo, grid: p.grid };
+      return { name, tempo: p.tempo, grid: p.grid, ...(p.rhythm ? { rhythm: p.rhythm } : {}) };
     },
     save: async (name, p) => {
       validatePattern(p.tempo, p.grid);
       const all = readPresets();
-      all[name] = { tempo: p.tempo, grid: p.grid };
+      all[name] = { tempo: p.tempo, grid: p.grid, ...(p.rhythm ? { rhythm: p.rhythm } : {}) };
       writePresets(all);
     },
     remove: async (name) => {

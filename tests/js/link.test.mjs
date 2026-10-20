@@ -53,7 +53,8 @@ test("protocol: same limits as the Python side", () => {
   assert.throws(() => protocol.encodePattern(120, Array(9).fill([1])), protocol.ProtocolError);
   assert.throws(() => protocol.encodePattern(120, [new Array(33).fill(0)]), protocol.ProtocolError);
   assert.throws(() => protocol.encodePattern(120, [[1, 0], [1]]), protocol.ProtocolError);
-  assert.throws(() => protocol.encodePattern(120, [[2]]), protocol.ProtocolError);
+  assert.throws(() => protocol.encodePattern(120, [[8]]), protocol.ProtocolError);
+  assert.equal(protocol.encodePattern(120, [[2, 0, 7]]), "PAT 120 1 3 101\n", "the 1.3 frame: figures are just on");
   assert.deepEqual(protocol.decodeReply("STEP 7\r"), { kind: "STEP", detail: "7" });
   assert.deepEqual(protocol.decodeReply("hello"), { kind: "LOG", detail: "hello" });
 });
@@ -75,7 +76,8 @@ test("link: play streams steps, stop ends them, steps are not logged", async () 
   await link.sendPlay();
   assert.equal(link.playing, true);
   assert.ok(await waitFor(() => ofType(events, "step").length >= 5, 3000));
-  assert.deepEqual(ofType(events, "step").slice(0, 5).map((e) => e.step), [0, 1, 2, 3, 0]);
+  // a 1.4 hub counts on (each pipe wraps its own row)
+  assert.deepEqual(ofType(events, "step").slice(0, 5).map((e) => e.step), [0, 1, 2, 3, 4]);
   await link.sendStop();
   assert.equal(link.playing, false);
   const n = ofType(events, "step").length;
@@ -189,7 +191,7 @@ test("link: a 1.1 hub's answer to PIPES isn't flagged as an error", async () => 
 
 test("link: live notes go straight out and the hub's firmware is known", async () => {
   const { link } = await openDemo();
-  assert.equal(await link.listPipes(), "1.3.0");
+  assert.equal(await link.listPipes(), "1.4.0");
   const pat = link.sendPattern(120, [[1, 0]]);     // a request in flight…
   await link.sendNotes(0b101);                       // …doesn't hold up a note
   await pat;
