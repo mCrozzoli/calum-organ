@@ -62,6 +62,7 @@
     <div class="group end">
       <button id="shareBtn" type="button" class="host-only organ-only" hidden title="Play the organ with other people">Share…</button>
       <button id="midiBtn" type="button" class="host-only organ-only" title="Play the pipes from a MIDI keyboard or pads">🎹 MIDI</button>
+      <button id="gestureBtn" type="button" title="Play the pipes by moving a phone or a game controller">🎮 Gestures</button>
       <button id="themeBtn" type="button"></button>
       <details class="menu" id="moreMenu">
         <summary>More ▾</summary>
@@ -279,6 +280,9 @@
           (Kazuhiko Arase, MIT).</li>
         <li>Online rooms: <a href="https://peerjs.com/" target="_blank" rel="noopener">PeerJS</a>
           (MIT) and its free public matchmaking server.</li>
+        <li>Gestures: learning by example as in
+          <a href="http://www.wekinator.org/" target="_blank" rel="noopener">Wekinator</a>
+          (Rebecca Fiebrink).</li>
       </ul>
 
       <p class="muted">Source:
@@ -307,6 +311,62 @@
         <button value="cancel" id="confirmCancel">Cancel</button>
         <button value="ok" id="confirmOk" class="accent">OK</button>
       </menu>
+    </form>
+  </dialog>
+
+  <dialog id="gestureDialog" class="wide gestures" aria-labelledby="gestureTitle">
+    <form method="dialog">
+      <p class="confirm-title" id="gestureTitle">Gestures</p>
+      <p class="confirm-body">Teach the organ your moves. Pick the pipes, hold a pose while
+        recording, and repeat for a few poses (teach a <b>silence</b> pose too: no pipes picked).
+        Map chooses what the model listens to and what it plays (pipes, tempo, loop); then Train,
+        and hold to play. In a room, everyone can do this on their own phone.</p>
+      <div id="gestureStart">
+        <div class="gesture-sources">
+          <button type="button" id="gPhone" class="accent">Use this phone's motion</button>
+          <button type="button" id="gDualSense">Connect a PS5 controller…</button>
+          <button type="button" id="gGamepad">Use a game controller</button>
+        </div>
+        <p class="muted" id="gestureNone" hidden>No motion sensors or game controller support here.
+          Open the room link on a phone, or use Chrome on a computer for a PS5 controller.</p>
+        <p class="muted">PS5 controller: plug it in by USB, or pair it over Bluetooth first.
+          Other controllers give sticks and triggers only.</p>
+      </div>
+      <div id="gestureOn" hidden>
+        <p class="gesture-src"><b id="gestureSrcName"></b>
+          <button type="button" class="link" id="gestureStop">stop</button></p>
+        <div class="gesture-xy" id="gestureXY" hidden aria-label="Touch pad: slide a finger (an input)"><i></i>
+          <span>touch pad</span></div>
+
+        <p class="gesture-step">1 · Teach</p>
+        <div class="gesture-pipes" id="gesturePipes"></div>
+        <div id="gestureTeachValues"></div>
+        <p class="muted" id="gestureTeachName"></p>
+        <button type="button" id="gestureRecord" class="gesture-hold">Hold to record this pose</button>
+        <p class="muted" id="gestureCounts"></p>
+        <button type="button" class="link" id="gestureClear">Forget all examples</button>
+
+        <p class="gesture-step">2 · Map</p>
+        <p class="muted">Inputs the poses are learnt from (tick them, or pick a set):</p>
+        <div class="gesture-presets" id="gesturePresets"></div>
+        <div class="gesture-meters" id="gestureMeters"></div>
+        <p class="muted">What the gestures play:</p>
+        <div class="gesture-outputs" id="gestureOutputs"></div>
+        <p class="muted" id="gestureControlsNote" hidden>Tempo and loop are the host's: here gestures play pipes.</p>
+
+        <p class="gesture-step">3 · Train</p>
+        <div class="gesture-row"><button type="button" id="gestureTrain" class="accent">Train</button>
+          <span class="muted" id="gestureTrainStatus"></span></div>
+
+        <p class="gesture-step">4 · Play</p>
+        <button type="button" id="gesturePlay" class="gesture-hold play">Hold to play</button>
+        <label class="ctl"><input type="checkbox" id="gestureAlways"> Play without holding</label>
+        <div class="gesture-out" id="gestureOut" aria-label="Pipes your gesture opens"></div>
+        <p class="muted" id="gestureNow" aria-live="polite"></p>
+        <button type="button" class="link" id="gestureWhole" hidden>Play the whole pattern again</button>
+        <p class="muted" id="gestureHints"></p>
+      </div>
+      <menu><button value="close">Done</button></menu>
     </form>
   </dialog>
 

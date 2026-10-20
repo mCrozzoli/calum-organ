@@ -159,7 +159,21 @@ test("a guest's backend turns room messages into the app's events", () => {
   assert.equal(events[0].session.rev, 4);
   assert.equal(events[0].organ.seq, 7);
   assert.deepEqual(events[1], { type: "status", connected: true, demo: false, playing: true, port: "usb" });
-  assert.deepEqual(events[2], { type: "organ", state: "sent", seq: 8, error: null });
-  assert.deepEqual(events[3], { type: "step", step: 3 });
-  assert.deepEqual(events[4], { type: "offline", reason: "bye" });
+  assert.deepEqual(events[2], { type: "room-live", live: 0 });
+  assert.deepEqual(events[3], { type: "organ", state: "sent", seq: 8, error: null });
+  assert.deepEqual(events[4], { type: "step", step: 3 });
+  assert.deepEqual(events[5], { type: "offline", reason: "bye" });
+});
+
+test("guests' gestures: the host gets them, limited to their pipe", () => {
+  const { host, guest } = fakeHost();
+  const got = [];
+  host.hooks.onLive = (mask, user) => got.push([mask, user.id]);
+  const ana = guest("ana");
+  host._message(ana, { t: "hello", name: "Ana" });
+  host._message(ana, { t: "live", mask: 0b1011 });
+  host.setRole("ana", "pipe", 1);
+  host._message(ana, { t: "live", mask: 0b1011 });
+  host._message(ana, { t: "live", mask: "lots" });
+  assert.deepEqual(got, [[0b1011, "ana"], [0b10, "ana"], [0, "ana"]]);
 });

@@ -468,6 +468,65 @@ dialog.midi .muted { color: var(--muted); font-size: 12px; line-height: 1.45; ma
 }
 .midi-last { font-family: Menlo, monospace; font-size: 11px; color: var(--muted); min-height: 1.4em; margin: 10px 0 0; }
 
+/* ---------- gestures ---------- */
+#gestureBtn.on { border-color: var(--green); color: var(--green); }
+dialog.gestures { width: min(560px, calc(100vw - 16px)); }
+dialog.gestures .muted { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 6px 0 0; }
+.gesture-sources { display: flex; flex-wrap: wrap; gap: 8px; }
+.gesture-src { margin: 0 0 8px; }
+.gesture-step { margin: 14px 0 6px; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+.gesture-meters { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; }
+.g-meter { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.g-meter span { width: 72px; flex: none; }
+.g-meter .bar { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--panel2); }
+.g-meter .bar::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--edge); }
+.g-meter i { position: absolute; top: 0; bottom: 0; background: var(--cyan); border-radius: 3px; }
+.gesture-pipes, .gesture-out { display: flex; flex-wrap: wrap; gap: 6px; }
+.gesture-pipes button { min-width: 44px; min-height: 44px; font-weight: 700; }
+.gesture-pipes button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.gesture-hold {
+  display: block; width: 100%; min-height: 64px; margin-top: 10px; font-size: 16px; font-weight: 600;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.gesture-hold.active { background: var(--red-fill); border-color: var(--red-fill); color: var(--on-red); }
+.gesture-hold.play.active { background: var(--green); border-color: var(--green); color: var(--on-accent); }
+dialog.gestures label.ctl { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+dialog.gestures label.ctl input[type="checkbox"] {
+  width: 20px; height: 20px; min-height: 0; margin: 0; padding: 0; flex: none; accent-color: var(--accent);
+}
+.g-meter input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; flex: none; accent-color: var(--accent); }
+.gesture-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; }
+.gesture-presets .chip { min-height: 0; padding: 3px 10px; border-radius: 12px; font-size: 12px; }
+.gesture-outputs { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.g-out { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.g-out b { width: 96px; font-size: 13px; }
+.g-direct { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+dialog.gestures input.g-num { width: 64px; padding: 4px 6px; font-size: 13px; }
+.g-inv { display: inline-flex; align-items: center; gap: 4px; }
+.g-inv input { width: 16px; height: 16px; min-height: 0; margin: 0; }
+.g-teach { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; margin: 6px 0; }
+.g-teach input[type="range"] { flex: 1; min-width: 140px; width: auto; }
+.g-val { min-width: 90px; color: var(--muted); font-size: 12px; }
+.gesture-xy {
+  --tx: 50%; --ty: 50%;      /* the finger, set by app.js */
+  position: relative; width: min(100%, 240px); aspect-ratio: 1; margin: 6px 0 4px;
+  border: 1px dashed var(--edge); border-radius: 10px; background: var(--panel2);
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.gesture-xy span { position: absolute; left: 8px; bottom: 6px; font-size: 11px; color: var(--muted); }
+.gesture-xy i {
+  position: absolute; left: var(--tx); top: var(--ty); width: 28px; height: 28px; margin: -14px 0 0 -14px;
+  border-radius: 50%; background: var(--cyan); opacity: 0.25;
+}
+.gesture-xy.touching i { opacity: 1; }
+.gesture-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gesture-out { margin-top: 10px; }
+.gesture-out span {
+  width: 36px; height: 36px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--edge); background: var(--panel2); color: var(--muted); font-weight: 700;
+}
+.gesture-out span.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+
 /* ---------- boards: hub & pipes ---------- */
 dialog.boards { width: min(600px, calc(100vw - 32px)); }
 dialog.boards .muted { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 6px 0 0; }

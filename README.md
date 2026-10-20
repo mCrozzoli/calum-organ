@@ -129,6 +129,54 @@ needs hub firmware 1.3 (More ▾ → Boards); with an older hub, keys play the
 simulated sound only. MIDI works in the online version; the local app plays
 live notes on the simulated sound only.
 
+## Gestures: phone or PS5 controller
+
+**🎮 Gestures** teaches the organ your moves and plays from them (learning
+by example, as in Rebecca Fiebrink's Wekinator). Choose the controller:
+**this phone's motion** (open the site or the room link on a phone), a
+**PS5 controller** (Chrome or Edge on a computer, USB or Bluetooth) or **any
+game controller**. Then four steps:
+
+1. **Teach**: pick the pipes this pose plays (none = a *silence* pose) and,
+   for learned controls, their values (e.g. tempo 60); hold **Hold to record
+   this pose** while holding it (moving a little helps). Repeat per pose. On
+   a PS5 controller, hold ✕ to record.
+2. **Map**: what the model listens to and what it plays.
+   - **Inputs**, each with a live meter and a tick box, or a set at once
+     (*Tilt only*, *Tilt + turn*, *Tilt + moves*, *Everything*):
+
+     | Controller | Inputs |
+     |---|---|
+     | Phone | tilt x/y/z, turn x/y/z, compass heading, the on-screen touch pad (x, y, touching) |
+     | PS5 | tilt, turn, both sticks, L2/R2, the touchpad (x, y, touching) |
+     | Gamepad | both sticks, both triggers |
+     | All | **shake** (how much it's moving lately) and **swing x/y** (the direction of the last quick move, fading out) |
+
+   - **Outputs**: **Pipes** (learned or off); **Tempo**, **Loop length**
+     (play only N steps) and **Loop section** (which part of the pattern
+     loops), each *off*, *learned from the poses* (it glides between the
+     values you taught) or *direct from one input* (e.g. tilt y → loop
+     length 1–8, with invert; no training).
+3. **Train** (a second or two): it says how often the pipes come out right
+   and how close the controls get. Changing the map asks to train again
+   (the examples are kept).
+4. **Play**: hold **Hold to play** (or L1 on the controller, or tick *Play
+   without holding*) and move. The PS5 controller's light bar shows the open
+   pipes and it rumbles when one opens. Controls stay where you leave them,
+   like knobs; **Play the whole pattern again** ends a loop.
+
+Pipes play like MIDI keys: on top of the pattern, through the same live
+notes (hub 1.3), and Stop lets go. A loop changes what the organ is sent
+(only those steps); the rest of the grid is faded and the bar at the top
+says which steps loop. In a room every guest can teach and play their own
+phone (the phone learns; the host gets only which pipes it holds, and lets
+go after a second of silence); tempo and loop are the host's.
+
+The model is a small neural network (an MLP: one hidden layer of 24 units,
+one output per pipe and per learned control) trained in the browser in plain
+JavaScript (`js/mlp.js`). Examples, map and model are kept in that browser,
+per controller.
+
 ## Playing together
 
 Other people can paint the pattern with you, live, from their own phone or
@@ -401,6 +449,8 @@ calum-organ/
 │       ├── js/room.js      # online rooms: host hub, guest backend, roles
 │       ├── js/boards.js    # Boards panel: identify, install, set pipe letter
 │       ├── js/midi.js      # MIDI: devices, mapping, learn, pad-grid LEDs
+│       ├── js/mlp.js       # gestures: learn poses by example (small MLP)
+│       ├── js/motion.js    # gestures: phone motion, PS5 controller (WebHID), gamepads
 │       ├── js/link.js      # serial link + Web Serial transport
 │       ├── js/protocol.js  # same protocol as app/protocol.py
 │       ├── js/demo.js      # simulated organ
@@ -454,6 +504,8 @@ calum-organ/
 - v1.3 (Oct 2026): MIDI keyboards and pads play the pipes live (keys by
   pitch, sustain pedal, pads in a row, pad grids that show and edit the
   pattern, MIDI learn, record into the grid). Firmware: live notes.
+  Gestures: teach poses with a phone, a PS5 controller or a gamepad, and
+  play the pipes by moving; room guests play from their own phones.
 
 ## Credits and licences
 
@@ -472,6 +524,8 @@ with Claude AI as a co-designing agent, and the projects below.
   unpkg when installing.
 - `app/static/vendor/qrcode-generator/`: QR codes for sharing, by Kazuhiko
   Arase (MIT).
+- Gestures: learning by example as in Wekinator (Rebecca Fiebrink); the
+  PS5 controller's reports as documented in Linux's `hid-playstation` driver.
 - `app/static/vendor/peerjs/`: PeerJS 1.5.5 (MIT), and its free public
   matchmaking server, for online rooms.
 

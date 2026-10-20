@@ -79,6 +79,19 @@ The grid is a `<canvas>`, so it can only be used with a mouse or touch.
 - [ ] Space currently means play/stop globally. Decide how that coexists
       with Space = toggle cell when the grid has focus.
 
+## Gestures (built in 1.3): still to check
+
+Tested only with simulated motion and a simulated controller.
+
+- [ ] iPhone and Android: motion permission, a guest's phone playing the
+      host's organ, latency over the venue Wi-Fi.
+- [ ] A real PS5 controller over USB and Bluetooth: tilt/rotation values,
+      ✕ / L1, light bar and rumble (report layout from Linux's driver).
+- [ ] Tune shake and swing on real hands (scales, how fast swing fades).
+- [ ] Phone compass and touch pad on iPhone and Android.
+- [ ] Maybe: sharing a trained model (export/import), gesture tempo and
+      loop from a co-host's phone, loops in the local app.
+
 ## MIDI (built in 1.3): still to check
 
 Built: keyboards by pitch, sustain, pads in a row, Launchpad Mini MK3 / X

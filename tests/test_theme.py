@@ -29,7 +29,7 @@ def test_both_themes_define_the_same_tokens():
 
 
 # Layout variables set on one element (not colours), e.g. the stage's
-# listener position; app.js updates them.
+# listener position or the gesture pad's finger; app.js updates them.
 LOCAL = set(re.findall(r"(--[\w-]+)\s*:", CSS)) - DARK
 
 
@@ -37,7 +37,7 @@ def test_every_used_token_is_defined():
     used = set(re.findall(r"var\((--[\w-]+)", CSS))
     used |= set(re.findall(r'v\("(--[\w-]+)"\)', APP_JS))      # canvas palette
     assert used - DARK - LOCAL == set()
-    assert LOCAL <= {"--lx", "--ly", "--ring"}, "new local variable: colours belong in the theme blocks"
+    assert LOCAL <= {"--lx", "--ly", "--ring", "--tx", "--ty"}, "new local variable: colours belong in the theme blocks"
 
 
 def test_no_hard_coded_colours_outside_the_theme_blocks():

@@ -174,6 +174,11 @@ export class RoomHost {
       } catch (_) { /* ignore a bad pattern */ }
     } else if (msg.t === "transport" && mayConduct(user) && (msg.action === "play" || msg.action === "stop")) {
       this.hooks.onTransport(msg.action, user);
+    } else if (msg.t === "live") {
+      // Gestures from a guest's phone: which pipes they hold open now. A
+      // guest who owns one pipe can only play that one.
+      const mask = Number.isInteger(msg.mask) ? msg.mask & 0xff : 0;
+      this.hooks.onLive?.(user.perm === "pipe" ? mask & (1 << user.pipe) : mask, user);
     } else if (msg.t === "rename") {
       user.name = cleanName(msg.name);
       this._users();
@@ -333,6 +338,7 @@ export class RoomGuestBackend {
       case "role": ev({ type: "role", perm: m.perm, pipe: m.pipe }); break;
       case "organ":
         ev({ type: "status", connected: !!m.connected, demo: !!m.demo, playing: !!m.playing, port: m.port || null });
+        ev({ type: "room-live", live: (m.live || 0) & 0xff });
         ev({ type: "organ", state: m.error ? "error" : m.sending ? "sending" : "sent", seq: m.seq ?? null, error: m.error || null });
         break;
       case "step": ev({ type: "step", step: m.step }); break;
@@ -358,6 +364,9 @@ export class RoomGuestBackend {
   async play() { this._send({ t: "transport", action: "play" }); }
   async stop() { this._send({ t: "transport", action: "stop" }); }
   rename(name) { this.name = name; try { this._send({ t: "rename", name }); } catch (_) {} }
+  // Pipes this guest's gestures hold open (sent on change and every 300 ms
+  // while any are held: the host lets go after a second without it).
+  sendLive(mask) { try { this._send({ t: "live", mask }); } catch (_) {} }
   async listPorts() { return []; }
 
   leave() {

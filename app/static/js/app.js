@@ -16,6 +16,8 @@ import { createBackend, JoinError, OnlineBackend } from "./backends.js";
 import { LETTERS, inspect, install, setPipeLetter, testValve, latestVersion, plan, suggestLetter, sameMac, compareVersions } from "./boards.js";
 import { MidiPorts, LiveNotes, mapMessage, defaultSettings, deviceKind, controlKey, describeControl, noteLabel,
          gridFrame, ledMessages, recordStep } from "./midi.js";
+import { Learner, Hysteresis } from "./mlp.js";
+import { PhoneMotion, DualSense, AnyGamepad, PRESETS } from "./motion.js";
 import { RoomHost, RoomGuestBackend, cleanCode, isCode, makeCode } from "./room.js";
 import { validatePattern } from "./protocol.js";
 import { OrganSound } from "./sound.js";
@@ -62,6 +64,7 @@ const state = {
   you: null,             // this page's connection id
   users: [],             // who's connected: {id, name, role, colour}
   sharing: { on: false },
+  window: null,          // {start, length}: the organ loops only these steps (null: all)
   flashes: new Map(),    // "i,j" -> {colour, until}: someone else just painted it
 };
 
@@ -232,7 +235,7 @@ function readPalette() {
   palette = {
     cellOn: v("--cell-on"), cellOff: v("--cell-off"), cellOffBeat: v("--cell-off-beat"),
     step: v("--step-text"), stepBeat: v("--step-text-beat"), stepNow: v("--step-text-now"),
-    label: v("--muted"),
+    label: v("--muted"), bg: v("--bg"),
     playLive: v("--playhead-live"),
     playPreview: v("--playhead-preview"), playPreviewLine: v("--playhead-preview-line"),
   };
@@ -269,6 +272,17 @@ function drawGrid() {
     }
   }
   ctx.globalAlpha = 1;
+
+  // Looping a part of the pattern: the rest is faded.
+  if (state.window) {
+    ctx.globalAlpha = 0.6;
+    ctx.fillStyle = palette.bg;
+    for (let j = 0; j < state.cols; j++) {
+      if (j >= state.window.start && j < state.window.start + state.window.length) continue;
+      ctx.fillRect(colX(j), rowY(0), cell, rowY(state.rows - 1) + cellH - rowY(0));
+    }
+    ctx.globalAlpha = 1;
+  }
 
   // Someone else just painted these: outline them in their colour.
   const now = performance.now();
@@ -497,6 +511,10 @@ function renderTruth() {
   }
   modeBadge.textContent = mode;
   truthBar.className = `truth ${cls}`;
+  if (state.window) {
+    const { start, length } = state.window;
+    text += ` Looping steps ${start + 1}–${start + length} of ${state.cols}.`;
+  }
   truthText.textContent = text;
 
   let sync = "";
@@ -627,7 +645,7 @@ function flushPattern() {
     state.sending = true;
     renderTruth();
     try {
-      const seq = await backend.sendPattern(state.tempo, state.grid.map((row) => row.slice()));
+      const seq = await backend.sendPattern(state.tempo, organGrid());
       if (seq !== null) state.sentSeq = seq;
       state.sendError = null;
     } catch (e) {
@@ -748,18 +766,48 @@ function setPlayhead(step) {
   updateSoundGates();
 }
 
+// ---- play window: loop only part of the pattern (gestures set it)
+const playWindow = () => state.window || { start: 0, length: state.cols };
+
+// What the organ gets: the steps in the window.
+function organGrid() {
+  const { start, length } = playWindow();
+  return state.grid.map((row) => row.slice(start, start + length));
+}
+// The organ's step n -> the grid column.
+const organStepToCol = (n) => (playWindow().start + n) % state.cols;
+
+function setPlayWindow(start, length) {
+  length = clamp(Math.round(length), 1, state.cols);
+  const w = length < state.cols ? { start: clamp(Math.round(start), 0, state.cols - length), length } : null;
+  if (JSON.stringify(w) === JSON.stringify(state.window)) return;
+  state.window = w;
+  // A new length waits for the organ's bar to come round; a new start is the next step.
+  if (state.connected && !state.shared) schedulePatternSend();
+  drawGrid();
+  renderTruth();
+}
+
 // Preview: only when not connected, and drawn differently from the real one.
+// It reads the tempo and the window on every step, so gestures can bend it.
 let previewTimer = null;
+let previewStep = -1;
 function startPreview() {
   stopPreview();
   state.playing = true;
-  let step = -1;
-  previewTimer = setInterval(() => setPlayhead((step = (step + 1) % state.cols)),
-                             Math.max(20, Math.floor(60000 / state.tempo)));
+  previewStep = -1;
+  tickPreview();
   renderTruth();
 }
+function tickPreview() {
+  const { start, length } = playWindow();
+  const rel = previewStep - start;
+  previewStep = rel >= 0 && rel < length - 1 ? previewStep + 1 : start;
+  setPlayhead(previewStep);
+  previewTimer = setTimeout(tickPreview, Math.max(20, Math.floor(60000 / state.tempo)));
+}
 function stopPreview() {
-  if (previewTimer) clearInterval(previewTimer);
+  if (previewTimer) clearTimeout(previewTimer);
   previewTimer = null;
   state.playing = false;
   setPlayhead(-1);
@@ -1231,7 +1279,7 @@ function onBackendEvent(ev) {
         // A room guest also follows the host's preview playhead.
         if (!state.connected && !inRoomAsGuest()) break;
         state.lastStepAt = Date.now();
-        setPlayhead(ev.step);
+        setPlayhead(inRoomAsGuest() ? ev.step : organStepToCol(ev.step));
         break;
       case "transport":
         state.playing = !!ev.playing;
@@ -1246,6 +1294,10 @@ function onBackendEvent(ev) {
         state.peers = freshPeers();
         setPlayhead(-1);
         if (!state.shared) schedulePatternSend();   // shared: the server resends
+        break;
+      case "room-live":
+        relayedLive = ev.live;
+        updateLive();
         break;
       case "hub":
         hubFw = ev.fw;
@@ -1334,6 +1386,8 @@ function applyRole() {
   $("stageWrap").hidden = guest && !window.isSecureContext;
   logWrap.hidden = guest;
   quitBtn.hidden = guest || !backend?.canQuit;
+  // Gestures: the host, and room guests (a Wi-Fi guest's page can't send them).
+  $("gestureBtn").hidden = guest && !inRoomAsGuest();
   const shareBtn = $("shareBtn");
   shareBtn.hidden = guest || !backend;
   shareBtn.textContent = state.shared ? "Share…" : "Play together…";
@@ -1518,6 +1572,7 @@ function organStatus() {
     connected: state.connected, demo: state.demo, playing: state.playing,
     port: state.demo ? "demo organ" : state.port,
     seq: state.sentSeq, sending: state.sending || state.dirty, error: state.sendError,
+    live: state.live,
   };
 }
 
@@ -1565,7 +1620,10 @@ function roomHooks() {
       commitWhole();
     },
     onTransport: (action) => (action === "play" ? play() : stop()),
+    onLive: (mask, user) => onRemoteLive(mask, user),
     onUsers: (users) => {
+      for (const id of remoteLive.keys()) if (!users.some((u) => u.id === id)) remoteLive.delete(id);
+      updateLive();
       state.users = users;
       renderPresence();
       if ($("personDialog").open) renderPersonDialog();
@@ -2256,11 +2314,21 @@ const actionLabel = (a) => (a.kind === "pipe" ? `pipe ${pipeName(a.pipe)}${a.dow
   : a.kind === "page" ? "page" : targetLabel(a.kind));
 
 // Held keys changed: tell the organ (and the simulated sound, the screen).
+// Live = MIDI keys + this page's gestures (+ on the host: guests' phones;
+// on a guest: what the host says everyone holds).
 function updateLive() {
-  const mask = live.mask;
+  const own = live.mask | gestureMask;
+  let mask = own;
+  if (inRoomAsGuest()) {
+    if (own !== sentOwnLive) { sentOwnLive = own; backend.sendLive?.(own); }
+    mask |= relayedLive;
+  } else {
+    for (const r of remoteLive.values()) mask |= r.mask;
+  }
   if (mask === state.live) return;
   state.live = mask;
-  if (state.connected && backend?.sendNotes) {
+  relayOrgan();
+  if (!inRoomAsGuest() && state.connected && backend?.sendNotes) {
     if (hubPlaysLive()) backend.sendNotes(mask);
     else if (mask && !warnedOldHub) {
       warnedOldHub = true;
@@ -2275,6 +2343,7 @@ function updateLive() {
 
 function releaseLive() {
   live.clear();
+  remoteLive.clear();
   updateLive();
 }
 
@@ -2294,7 +2363,9 @@ function renderRecord() {
 
 function recordPipe(pipe) {
   if (!state.playing || state.playhead < 0 || !mayPaintRow(pipe) || pipe >= state.rows) return;
-  const col = recordStep(state.playhead, state.lastStepAt, 60000 / state.tempo, Date.now(), state.cols);
+  const { start, length } = playWindow();
+  if (state.playhead < start || state.playhead >= start + length) return;   // the loop just moved
+  const col = start + recordStep(state.playhead - start, state.lastStepAt, 60000 / state.tempo, Date.now(), length);
   if (state.grid[pipe][col] === 1) return;
   state.grid[pipe][col] = 1;
   paintedCells.push([pipe, col, 1]);
@@ -2466,6 +2537,487 @@ async function restoreMidi() {
   } catch (_) { /* no permissions API: wait for a click */ }
 }
 
+// ---------------------------------------------------------------- gestures
+// Teach the organ poses (mlp.js) with a phone's motion, a PS5 controller or
+// any game controller (motion.js), then play by moving.
+//
+//   Teach  pick the pipes (and the control values) this pose stands for,
+//          hold a pose while recording
+//   Map    which inputs the model listens to; for each output (pipes,
+//          tempo, loop length, loop section): off, learned from the poses,
+//          or direct (one input turned straight into a value, no training)
+//   Train  a second or two
+//   Play   hold to play (or L1 / the left bumper, or "Play without holding")
+//
+// Pipes go the same way as MIDI keys (live notes). A phone in a room trains
+// and plays on the phone; only "which pipes" goes to the host. Controls act
+// on the host's own page only.
+const GESTURE_KEY = "calumOrgan.gestures.v2";
+const OUTPUTS = [
+  { id: "tempo", label: "Tempo", unit: "steps/min", lo: 20, hi: 300, teach: 120, min: 60, max: 200 },
+  { id: "loop", label: "Loop length", unit: "steps", lo: 1, hi: 32, teach: 4, min: 1, max: 16 },
+  { id: "section", label: "Loop section", unit: "%", lo: 0, hi: 100, teach: 0, min: 0, max: 100 },
+];
+// Inputs that go 0..1 rather than -1..1 (for direct mappings).
+const ONE_SIDED = new Set(["l2", "r2", "lt", "rt", "touching", "shake"]);
+
+let gestureSource = null;
+let learner = null;
+let gcfg = null;               // this controller's map: inputs, outputs, values being taught
+const hyst = new Hysteresis();
+let gestureMask = 0;           // pipes this page's gestures hold open
+let teachMask = 0;             // pipes the pose being taught should open
+const gestureHold = { record: false, play: false };
+let lastExampleAt = 0;
+let lastControlAt = 0;
+let gestureValues = {};        // what the controls are being set to now (for the panel)
+let training = false;
+let trainNote = "";
+const remoteLive = new Map();  // host: guest id -> {mask, at} (their phones)
+let relayedLive = 0;           // guest: every pipe held live, as the host says
+let sentOwnLive = 0;
+
+function defaultConfig(src) {
+  const groups = new Set(src.inputs.map((i) => i.group));
+  const pick = groups.has("tilt") ? ["tilt"] : ["sticks", "triggers"];
+  const first = src.inputs.find((i) => i.group === pick[0])?.id;
+  return {
+    inputs: src.inputs.filter((i) => pick.includes(i.group)).map((i) => i.id),
+    outputs: Object.fromEntries([["pipes", "learned"],
+      ...OUTPUTS.map((o) => [o.id, { mode: "off", input: first, invert: false, min: o.min, max: o.max }])]),
+    teach: Object.fromEntries(OUTPUTS.map((o) => [o.id, o.teach])),
+  };
+}
+
+function loadGestures(src) {
+  let saved = null;
+  try { saved = (JSON.parse(localStorage.getItem(GESTURE_KEY)) || {})[src.kind]; } catch (_) {}
+  const ids = src.inputs.map((i) => i.id).join(",");
+  gcfg = defaultConfig(src);
+  learner = new Learner(src.inputs.length);
+  if (saved?.ids !== ids) return;               // a different set of inputs: start afresh
+  try {
+    learner = Learner.fromJSON(saved.learner);
+    const c = saved.config;
+    if (c) {
+      gcfg.inputs = c.inputs.filter((id) => ids.split(",").includes(id));
+      Object.assign(gcfg.teach, c.teach);
+      gcfg.outputs.pipes = c.outputs.pipes === "off" ? "off" : "learned";
+      for (const o of OUTPUTS) Object.assign(gcfg.outputs[o.id], c.outputs[o.id]);
+    }
+  } catch (_) { learner = new Learner(src.inputs.length); }
+}
+function saveGestures() {
+  if (!gestureSource || !learner) return;
+  try {
+    const all = JSON.parse(localStorage.getItem(GESTURE_KEY) || "{}");
+    const l = learner.toJSON();
+    l.examples = l.examples.slice(-3000);
+    all[gestureSource.kind] = { ids: gestureSource.inputs.map((i) => i.id).join(","), learner: l, config: gcfg };
+    localStorage.setItem(GESTURE_KEY, JSON.stringify(all));
+  } catch (_) { /* full or blocked: it still works until reload */ }
+}
+
+const isHostControls = () => state.role === "host";
+// Loop length/section change what the organ is sent: the host's own organ only.
+const outputAvailable = (id) => (id === "tempo" ? conducts() && isHostControls() : isHostControls() && !state.shared);
+const learnedControls = () => OUTPUTS.filter((o) => outputAvailable(o.id) && gcfg.outputs[o.id].mode === "learned").map((o) => o.id);
+const inputIndices = () => gcfg.inputs.map((id) => gestureSource.inputs.findIndex((i) => i.id === id)).filter((i) => i >= 0);
+const allowedMask = () => (state.role === "guest" && state.perm === "pipe" ? 1 << state.myPipe
+  : (1 << state.rows) - 1);
+
+// The model fits the current map (else: train again).
+function modelFits() {
+  if (!learner?.model) return false;
+  const sameInputs = JSON.stringify(learner.inputs) === JSON.stringify(inputIndices());
+  const sameOut = (learner.pipes !== false) === (gcfg.outputs.pipes === "learned")
+    && JSON.stringify(learner.controls) === JSON.stringify(learnedControls());
+  return sameInputs && sameOut;
+}
+
+// Units <-> 0..1 inside the model.
+const toUnit = (o, v) => (v - o.lo) / (o.hi - o.lo);
+const fromUnit = (o, u) => o.lo + clamp(u, 0, 1) * (o.hi - o.lo);
+
+async function startGestures(Source) {
+  const src = new Source(onGestureInput);
+  try {
+    await src.start();
+  } catch (e) {
+    if (e?.name === "NotFoundError") return;            // closed the chooser
+    toast(`Couldn't start: ${e.message || e}`, "err");
+    return;
+  }
+  gestureSource?.stop();
+  gestureSource = src;
+  loadGestures(src);
+  hyst.reset();
+  trainNote = learner.model ? "Trained earlier." : "";
+  renderGestures();
+}
+
+function stopGestures() {
+  gestureSource?.stop();
+  gestureSource = null;
+  gestureMask = 0;
+  updateLive();
+  renderGestures();
+}
+
+let gestureFrame = false;
+function onGestureInput() {
+  const src = gestureSource;
+  if (!src?.features) return;
+  const now = performance.now();
+  const recording = (gestureHold.record || src.record) && $("gestureDialog").open;
+  if (recording && now - lastExampleAt > 33) {           // ~30 examples a second
+    lastExampleAt = now;
+    const values = {};
+    for (const o of OUTPUTS) values[o.id] = toUnit(o, gcfg.teach[o.id]);
+    learner.add(src.features, gcfg.outputs.pipes === "learned" ? teachMask : 0, values);
+  }
+  const armed = !recording && !training && ($("gestureAlways").checked || gestureHold.play || src.arm);
+  let mask = 0;
+  if (armed) {
+    const pred = modelFits() ? learner.predict(src.features) : null;
+    if (pred?.pipes) mask = hyst.update(pred.pipes) & allowedMask();
+    const values = {};
+    for (const o of OUTPUTS) {
+      if (!outputAvailable(o.id)) continue;
+      const m = gcfg.outputs[o.id];
+      if (m.mode === "learned" && pred && o.id in pred.controls) values[o.id] = fromUnit(o, pred.controls[o.id]);
+      if (m.mode === "direct") values[o.id] = directValue(src, m);
+    }
+    gestureValues = values;
+    if (now - lastControlAt > 100) { lastControlAt = now; applyControls(values); }
+  } else {
+    hyst.reset();
+  }
+  if (mask !== gestureMask) {
+    const opened = mask & ~gestureMask;
+    gestureMask = mask;
+    updateLive();
+    if (opened) { src.feedback({ rgb: pipeRgb(mask), rumble: 90 }); setTimeout(() => src.feedback({ rgb: pipeRgb(gestureMask), rumble: 0 }), 70); }
+    else src.feedback({ rgb: pipeRgb(mask), rumble: 0 });
+  }
+  if (!gestureFrame && $("gestureDialog").open) {
+    gestureFrame = true;
+    requestAnimationFrame(() => { gestureFrame = false; renderGestureLive(recording, armed); });
+  }
+}
+
+// One input straight to a value: its range -> min..max (or max..min).
+function directValue(src, m) {
+  const i = src.inputs.findIndex((x) => x.id === m.input);
+  if (i < 0) return null;
+  const f = src.features[i];
+  let u = ONE_SIDED.has(m.input) ? f : (f + 1) / 2;
+  u = clamp(u, 0, 1);
+  if (m.invert) u = 1 - u;
+  return m.min + u * (m.max - m.min);
+}
+
+// Gesture controls -> tempo and the play window (like turning knobs: they
+// stay where they were left).
+function applyControls(v) {
+  if (v.tempo != null) {
+    const t = clamp(Math.round(v.tempo), 20, 300);
+    if (t !== state.tempo) {
+      tempoInput.value = t;
+      tempoInput.dispatchEvent(new Event("change"));
+    }
+  }
+  if (v.loop != null || v.section != null) {
+    const length = v.loop != null ? clamp(Math.round(v.loop), 1, state.cols) : playWindow().length;
+    const frac = v.section != null ? clamp(v.section / 100, 0, 1) : (state.cols > length ? playWindow().start / (state.cols - length) : 0);
+    setPlayWindow(frac * (state.cols - length), length);
+  }
+}
+
+// The light bar shows the open pipes' colours (blended); dim blue when idle.
+function pipeRgb(mask) {
+  const on = [...Array(8).keys()].filter((i) => (mask >> i) & 1);
+  if (!on.length) return [0, 0, 24];
+  const rgb = on.map((i) => hslRgb(i * 45, 1, 0.5));
+  return [0, 1, 2].map((k) => Math.round(rgb.reduce((s, c) => s + c[k], 0) / rgb.length));
+}
+function hslRgb(h, s, l) {
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    return l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  return [f(0), f(8), f(4)].map((v) => Math.round(v * 255));
+}
+
+function renderGestureLive(recording, armed) {
+  const src = gestureSource;
+  if (!src?.features) return;
+  [...$("gestureMeters").children].forEach((row, i) => {
+    const v = clamp(src.features[i], -1.5, 1.5);
+    const bar = row.querySelector("i");
+    bar.style.left = `${50 + Math.min(0, v) * 33}%`;
+    bar.style.width = `${Math.abs(v) * 33}%`;
+  });
+  $("gestureRecord").classList.toggle("active", recording);
+  $("gesturePlay").classList.toggle("active", armed);
+  [...$("gestureOut").children].forEach((d, i) => d.classList.toggle("on", ((gestureMask >> i) & 1) === 1));
+  const parts = [];
+  if (gestureValues.tempo != null) parts.push(`tempo ${Math.round(gestureValues.tempo)}`);
+  if (state.window) parts.push(`looping steps ${state.window.start + 1}–${state.window.start + state.window.length}`);
+  $("gestureNow").textContent = parts.join(" · ");
+  if (recording) renderGestureCounts();
+}
+
+function renderGestureCounts() {
+  const counts = learner?.counts() || {};
+  const parts = Object.entries(counts).map(([m, n]) => `${maskName(+m)}: ${n}`);
+  $("gestureCounts").textContent = parts.length ? `Examples: ${parts.join(" · ")}` : "No examples yet.";
+}
+const maskName = (m) => (m ? [...Array(8).keys()].filter((i) => (m >> i) & 1).map(pipeName).join("+") : "silence");
+
+function el(tag, props = {}, ...children) {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...children);
+  return e;
+}
+
+function renderGestures() {
+  const on = !!gestureSource;
+  $("gestureBtn").classList.toggle("on", on);
+  $("gestureStart").hidden = on;
+  $("gestureOn").hidden = !on;
+  $("gPhone").hidden = !PhoneMotion.supported || !matchMedia("(pointer: coarse)").matches;
+  $("gDualSense").hidden = !DualSense.supported;
+  $("gGamepad").hidden = !AnyGamepad.supported;
+  $("gestureNone").hidden = !$("gPhone").hidden || !$("gDualSense").hidden || !$("gGamepad").hidden;
+  if (!on) return;
+  const src = gestureSource;
+  $("gestureSrcName").textContent = `Using ${src.label}`;
+  $("gestureXY").hidden = src.kind !== "phone";
+  $("gestureHints").textContent = src.kind === "dualsense"
+    ? "On the controller: hold ✕ to record, hold L1 to play."
+    : src.kind === "gamepad" ? "On the controller: hold A/✕ to record, hold the left bumper to play." : "";
+
+  // 1 · Teach: the pipes and control values this pose stands for
+  const pipesOn = gcfg.outputs.pipes === "learned";
+  const pipes = $("gesturePipes");
+  pipes.hidden = !pipesOn;
+  pipes.innerHTML = "";
+  for (let i = 0; i < state.rows; i++) {
+    const b = el("button", { type: "button", textContent: pipeName(i), disabled: !((allowedMask() >> i) & 1) });
+    b.setAttribute("aria-pressed", String(((teachMask >> i) & 1) === 1));
+    b.addEventListener("click", () => { teachMask ^= 1 << i; renderGestures(); });
+    pipes.appendChild(b);
+  }
+  const teachVals = $("gestureTeachValues");
+  teachVals.innerHTML = "";
+  for (const o of OUTPUTS) {
+    if (!outputAvailable(o.id) || gcfg.outputs[o.id].mode !== "learned") continue;
+    const val = el("span", { className: "g-val", textContent: `${gcfg.teach[o.id]} ${o.unit}` });
+    const range = el("input", { type: "range", min: o.lo, max: o.id === "loop" ? state.cols : o.hi, step: 1, value: gcfg.teach[o.id] });
+    range.setAttribute("aria-label", `${o.label} for this pose`);
+    range.addEventListener("input", () => { gcfg.teach[o.id] = +range.value; val.textContent = `${range.value} ${o.unit}`; renderTeachName(); });
+    range.addEventListener("change", saveGestures);
+    teachVals.appendChild(el("label", { className: "g-teach" }, `${o.label} for this pose`, range, val));
+  }
+  renderTeachName();
+  renderGestureCounts();
+
+  // 2 · Map: inputs (with live meters) and outputs
+  const presets = $("gesturePresets");
+  presets.innerHTML = "";
+  const groups = new Set(src.inputs.map((i) => i.group));
+  for (const p of PRESETS) {
+    if (p.groups && !p.groups.every((g) => groups.has(g))) continue;
+    const b = el("button", { type: "button", className: "chip", textContent: p.name });
+    b.addEventListener("click", () => {
+      gcfg.inputs = src.inputs.filter((i) => !p.groups || p.groups.includes(i.group)).map((i) => i.id);
+      saveGestures();
+      renderGestures();
+    });
+    presets.appendChild(b);
+  }
+  const meters = $("gestureMeters");
+  meters.innerHTML = "";
+  for (const inp of src.inputs) {
+    const box = el("input", { type: "checkbox", checked: gcfg.inputs.includes(inp.id) });
+    box.addEventListener("change", () => {
+      gcfg.inputs = src.inputs.filter((i) => (i.id === inp.id ? box.checked : gcfg.inputs.includes(i.id))).map((i) => i.id);
+      saveGestures();
+      renderGestures();
+    });
+    meters.appendChild(el("label", { className: "g-meter" }, box, el("span", { textContent: inp.label }),
+      el("div", { className: "bar" }, el("i"))));
+  }
+  const outs = $("gestureOutputs");
+  outs.innerHTML = "";
+  const pipeSel = el("select");
+  pipeSel.add(new Option("learned from the poses", "learned"));
+  pipeSel.add(new Option("off", "off"));
+  pipeSel.value = gcfg.outputs.pipes;
+  pipeSel.addEventListener("change", () => { gcfg.outputs.pipes = pipeSel.value; saveGestures(); renderGestures(); });
+  outs.appendChild(el("div", { className: "g-out" }, el("b", { textContent: "Pipes" }), pipeSel));
+  for (const o of OUTPUTS) {
+    if (!outputAvailable(o.id)) continue;
+    const m = gcfg.outputs[o.id];
+    const mode = el("select");
+    for (const [v, t] of [["off", "off"], ["learned", "learned from the poses"], ["direct", "direct from one input"]]) mode.add(new Option(t, v));
+    mode.value = m.mode;
+    mode.addEventListener("change", () => {
+      m.mode = mode.value;
+      if (m.mode === "off" && o.id !== "tempo") setPlayWindow(0, state.cols);
+      saveGestures();
+      renderGestures();
+    });
+    const row = el("div", { className: "g-out" }, el("b", { textContent: o.label }), mode);
+    if (m.mode === "direct") {
+      const inSel = el("select");
+      inSel.setAttribute("aria-label", `${o.label}: which input`);
+      for (const i of src.inputs) inSel.add(new Option(i.label, i.id));
+      inSel.value = m.input;
+      inSel.addEventListener("change", () => { m.input = inSel.value; saveGestures(); });
+      const num = (key) => {
+        const n = el("input", { type: "number", value: m[key], min: o.lo, max: o.hi, className: "g-num" });
+        n.setAttribute("aria-label", `${o.label} ${key}`);
+        n.addEventListener("change", () => { m[key] = clamp(+n.value || 0, o.lo, o.hi); n.value = m[key]; saveGestures(); });
+        return n;
+      };
+      const inv = el("input", { type: "checkbox", checked: m.invert });
+      inv.addEventListener("change", () => { m.invert = inv.checked; saveGestures(); });
+      row.append(el("span", { className: "g-direct" }, inSel, " → ", num("min"), "–", num("max"), ` ${o.unit} `,
+        el("label", { className: "g-inv" }, inv, " invert")));
+    }
+    outs.appendChild(row);
+  }
+  $("gestureControlsNote").hidden = isHostControls();
+
+  // 3 · Train   4 · Play
+  const needsModel = gcfg.outputs.pipes === "learned" || learnedControls().length > 0;
+  $("gestureTrain").disabled = training || !needsModel;
+  $("gestureTrainStatus").textContent = training ? "Training…"
+    : !needsModel ? "Nothing to learn: every output is off or direct."
+    : learner.model && !modelFits() ? "The map changed: train again."
+    : trainNote || (learner.model ? "Trained." : "Not trained yet.");
+  const out = $("gestureOut");
+  out.innerHTML = "";
+  for (let i = 0; i < state.rows; i++) out.appendChild(el("span", { textContent: pipeName(i) }));
+  out.hidden = !pipesOn;
+  $("gesturePlay").disabled = needsModel && !modelFits() && !OUTPUTS.some((o) => outputAvailable(o.id) && gcfg.outputs[o.id].mode === "direct");
+  $("gestureWhole").hidden = !state.window;
+}
+
+function renderTeachName() {
+  const parts = gcfg.outputs.pipes === "learned" ? [maskName(teachMask)] : [];
+  for (const o of OUTPUTS) {
+    if (outputAvailable(o.id) && gcfg.outputs[o.id].mode === "learned") parts.push(`${o.label.toLowerCase()} ${gcfg.teach[o.id]}`);
+  }
+  $("gestureTeachName").textContent = parts.length ? `This pose: ${parts.join(" · ")}` : "";
+}
+
+// Hold-to-record and hold-to-play buttons (touch, mouse or pen).
+for (const [id, key] of [["gestureRecord", "record"], ["gesturePlay", "play"]]) {
+  const b = $(id);
+  const set = (v) => (e) => {
+    e.preventDefault();
+    gestureHold[key] = v;
+    if (v) { try { b.setPointerCapture(e.pointerId); } catch (_) {} }
+    onGestureInput();
+    if (!v && key === "record") renderGestureCounts();
+  };
+  b.addEventListener("pointerdown", set(true));
+  for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) b.addEventListener(ev, set(false));
+  b.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
+// The phone's XY pad: a finger on it is an input (touch x / y / touching).
+{
+  const pad = $("gestureXY");
+  const move = (e) => {
+    if (!gestureSource?.setTouch) return;
+    const r = pad.getBoundingClientRect();
+    const x = clamp(((e.clientX - r.left) / r.width) * 2 - 1, -1, 1);
+    const y = clamp(((e.clientY - r.top) / r.height) * 2 - 1, -1, 1);
+    gestureSource.setTouch(x, y);
+    pad.style.setProperty("--tx", `${((x + 1) / 2) * 100}%`);
+    pad.style.setProperty("--ty", `${((y + 1) / 2) * 100}%`);
+    pad.classList.add("touching");
+  };
+  pad.addEventListener("pointerdown", (e) => { e.preventDefault(); try { pad.setPointerCapture(e.pointerId); } catch (_) {} move(e); });
+  pad.addEventListener("pointermove", (e) => { if (pad.classList.contains("touching")) move(e); });
+  for (const ev of ["pointerup", "pointercancel"]) {
+    pad.addEventListener(ev, () => { gestureSource?.setTouch?.(null); pad.classList.remove("touching"); });
+  }
+}
+
+$("gestureTrain").addEventListener("click", async () => {
+  if (!learner || training) return;
+  training = true;
+  renderGestures();
+  try {
+    const res = await learner.train({
+      inputs: inputIndices(), pipes: gcfg.outputs.pipes === "learned", controls: learnedControls(),
+      onProgress: (f) => { $("gestureTrainStatus").textContent = `Training… ${Math.round(f * 100)}%`; },
+    });
+    const parts = [];
+    if (res.pipes != null) parts.push(`pipes right for ${Math.round(res.pipes * 100)}% of your examples`);
+    for (const [c, err] of Object.entries(res.controls)) {
+      const o = OUTPUTS.find((x) => x.id === c);
+      parts.push(`${o.label.toLowerCase()} within ~${Math.round(err * (o.hi - o.lo))} ${o.unit}`);
+    }
+    const weak = res.pipes != null && res.pipes < 0.85;
+    trainNote = `Trained: ${parts.join(", ")}.`
+      + (weak ? " Some poses look alike: make them more different, record more, or pick other inputs." : " Hold to play.");
+    saveGestures();
+  } catch (e) {
+    trainNote = e.message;
+  }
+  training = false;
+  renderGestures();
+});
+$("gestureClear").addEventListener("click", async () => {
+  if (!learner?.examples.length) return;
+  const go = await askConfirm({ title: "Forget all examples?", body: "The poses you taught and the trained model are cleared.", ok: "Forget", danger: true });
+  if (!go) return;
+  learner.clear();
+  hyst.reset();
+  gestureMask = 0;
+  trainNote = "";
+  updateLive();
+  saveGestures();
+  renderGestures();
+});
+$("gestureWhole").addEventListener("click", () => { setPlayWindow(0, state.cols); renderGestures(); });
+$("gPhone").addEventListener("click", () => startGestures(PhoneMotion));
+$("gDualSense").addEventListener("click", () => startGestures(DualSense));
+$("gGamepad").addEventListener("click", () => startGestures(AnyGamepad));
+$("gestureStop").addEventListener("click", stopGestures);
+$("gestureBtn").addEventListener("click", () => {
+  moreMenu.open = false;
+  $("gestureDialog").showModal();
+  renderGestures();
+});
+// Closing the panel keeps playing only if "Play without holding" is on
+// (the on-screen hold button is in the panel).
+$("gestureDialog").addEventListener("close", () => { gestureHold.record = false; gestureHold.play = false; onGestureInput(); });
+
+// Host: guests' phones. Forget one that's gone quiet (closed, out of range).
+function onRemoteLive(mask, user) {
+  if (mask) remoteLive.set(user.id, { mask, at: Date.now() });
+  else remoteLive.delete(user.id);
+  updateLive();
+}
+setInterval(() => {
+  // Guest: remind the host what this phone holds (it lets go after 1 s).
+  if (inRoomAsGuest()) {
+    const own = live.mask | gestureMask;
+    if (own) backend.sendLive?.(own);
+    return;
+  }
+  let changed = false;
+  for (const [id, r] of remoteLive) if (Date.now() - r.at > 1000) { remoteLive.delete(id); changed = true; }
+  if (changed) updateLive();
+}, 300);
+
 // ---------------------------------------------------------------- theme
 // Auto follows the computer's light/dark setting; Light and Dark override it.
 // The inline script in index.html applies it before first paint.
@@ -2515,6 +3067,7 @@ function setRowsCols(rows, cols) {
   state.cols = cols;
   state.grid = newGrid;
   if (state.playhead >= cols) state.playhead = -1;
+  if (state.window) { const w = state.window; state.window = null; setPlayWindow(w.start, w.length); }
   relayout();
   commitWhole();
 }
@@ -2530,7 +3083,6 @@ rowsInput.addEventListener("change", () => setRowsCols(readNumber(rowsInput, 1, 
 colsInput.addEventListener("change", () => setRowsCols(state.rows, readNumber(colsInput, 1, 32, state.cols)));
 tempoInput.addEventListener("change", () => {
   state.tempo = readNumber(tempoInput, 20, 300, state.tempo);
-  if (previewTimer) startPreview();
   commitWhole();
 });
 
