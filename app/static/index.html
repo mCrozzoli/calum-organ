@@ -28,7 +28,7 @@
 </head>
 <body data-role="unknown">
   <header class="topbar">
-    <div class="brand">Calum Organ <span class="ver">v1.2 · <span id="modeName">…</span></span></div>
+    <div class="brand">Calum Organ <span class="ver">v1.3 · <span id="modeName">…</span></span></div>
 
     <div class="group conn host-only organ-only">
       <select id="portSelect" aria-label="Serial port"></select>
@@ -39,6 +39,8 @@
     <div class="group transport">
       <button id="playBtn" class="accent host-only" aria-pressed="false">▶ Play</button>
       <button id="clearBtn" class="host-only">Clear</button>
+      <button id="recBtn" class="host-only rec" aria-pressed="false" hidden
+              title="Record: keys you play on the MIDI controller are written into the grid while it plays">● Rec</button>
     </div>
 
     <div class="group settings">
@@ -59,6 +61,7 @@
 
     <div class="group end">
       <button id="shareBtn" type="button" class="host-only organ-only" hidden title="Play the organ with other people">Share…</button>
+      <button id="midiBtn" type="button" class="host-only organ-only" title="Play the pipes from a MIDI keyboard or pads">🎹 MIDI</button>
       <button id="themeBtn" type="button"></button>
       <details class="menu" id="moreMenu">
         <summary>More ▾</summary>
@@ -237,7 +240,7 @@
 
   <dialog id="aboutDialog" class="wide about" aria-labelledby="aboutTitle">
     <form method="dialog">
-      <h2 id="aboutTitle">Calum Organ <span class="ver">v1.2</span></h2>
+      <h2 id="aboutTitle">Calum Organ <span class="ver">v1.3</span></h2>
       <p>A step sequencer for Calum's pipe organ: each pipe has a valve driven
         by an ESP32 board, and the boards play together over ESP-NOW. Draw a
         pattern and the organ plays it. Without the organ, a simulated one
@@ -304,6 +307,33 @@
         <button value="cancel" id="confirmCancel">Cancel</button>
         <button value="ok" id="confirmOk" class="accent">OK</button>
       </menu>
+    </form>
+  </dialog>
+
+  <dialog id="midiDialog" class="wide midi" aria-labelledby="midiTitle">
+    <form method="dialog">
+      <p class="confirm-title" id="midiTitle">MIDI keyboard &amp; pads</p>
+      <p class="confirm-body">Plug a MIDI keyboard or pad controller in by USB. Held keys open
+        their pipes straight away, on top of the pattern; the sustain pedal keeps them open.
+        <b>● Rec</b> writes what you play into the grid while it plays.</p>
+      <p class="dialog-error" id="midiUnsupported" hidden>MIDI needs Chrome or Edge on a computer.</p>
+      <div id="midiOff">
+        <button type="button" id="midiEnable" class="accent">Turn on MIDI</button>
+        <p class="muted">The browser asks once whether this page may use MIDI devices.</p>
+      </div>
+      <div id="midiOn" hidden>
+        <p class="board-warn" id="midiHubNote" hidden>The hub runs older firmware: update it to 1.3 in
+          More ▾ → Boards to play the real pipes live. Until then keys play the simulated sound.</p>
+        <div id="midiDevices"></div>
+        <div class="midi-learn">
+          <span>Link a control:</span>
+          <select id="midiTarget" aria-label="What the control does"></select>
+          <button type="button" id="midiLearnBtn" class="accent">Learn</button>
+        </div>
+        <p class="muted" id="midiLearnHint"></p>
+        <p class="midi-last" id="midiLast" aria-live="polite"></p>
+      </div>
+      <menu><button value="close">Done</button></menu>
     </form>
   </dialog>
 

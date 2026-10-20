@@ -178,6 +178,8 @@ export class OnlineBackend {
     this.link = new SerialLink((ev) => {
       if (ev.type === "status") ev.demo = ev.connected && this._demo;
       this.onEvent(ev);
+      // A rebooted (maybe just updated) hub: ask again what it is and hears.
+      if (ev.type === "ready") this._askHub();
     });
   }
 
@@ -233,9 +235,18 @@ export class OnlineBackend {
       }
       throw e;
     }
-    // Which pipes does the hub hear? (A 1.1 hub doesn't know: fine.)
-    this.link.listPipes().catch(() => {});
+    this._askHub();
   }
+
+  // Which pipes does the hub hear, and which firmware is it? (A 1.1 hub
+  // doesn't know PIPES: fine.)
+  _askHub() {
+    this.link.listPipes().catch(() => {})
+      .finally(() => this.onEvent({ type: "hub", fw: this.link.hubFw }));
+  }
+
+  get hubFw() { return this.link.hubFw; }
+  sendNotes(mask) { return this.link.sendNotes(mask); }
 
   disconnect() { return this.link.close(); }
   sendPattern(tempo, grid) { return this.link.sendPattern(tempo, grid); }

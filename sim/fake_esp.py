@@ -10,7 +10,7 @@ Two modes:
   python -m sim.fake_esp --port /dev/ttys002
       Attach to an existing serial device (e.g. a USB loopback).
 
-It behaves like the v1.2 hub (sender) firmware: every PAT is answered with
+It behaves like the v1.3 hub (sender) firmware: every PAT is answered with
 OK PAT <seq>, then ACK <peer> <seq> for each row's peer (NAK for peers
 listed in --offline). PLAY starts a clock that emits STEP <n> at the
 pattern tempo; STOP stops it. The pattern is rendered as ASCII art.
@@ -109,7 +109,9 @@ class Engine:
         elif line == "PIPES":
             for i in range(8):
                 self._write(f"PIPE {i} DE:E0:00:00:00:0{i} 1.2\n".encode())
-            self._write(b"OK PIPES\n")
+            self._write(b"OK PIPES fw 1.3.0\n")
+        elif line.startswith("NOTE "):
+            pass                       # live notes: no reply, like the hub
         else:
             self._write(f"ERR unknown: {line}\n".encode())
 

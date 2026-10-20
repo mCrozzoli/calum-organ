@@ -60,7 +60,7 @@ def test_pipes_store_their_letter_and_the_hub_finds_them():
     for cmd in ('"INFO"', '"PIPE "', '"TEST"', "PKT_HELLO", "PKT_WHO"):
         assert cmd in pipe, cmd
     assert "READY FW calum_receiver %s pipe %c mac %s" in pipe
-    for needle in ("esp_now_register_recv_cb", '"PIPES"', '"OK PIPES"', "PIPE %d", "DUP %d", "ask_who()"):
+    for needle in ("esp_now_register_recv_cb", '"PIPES"', 'OK PIPES fw %s', "PIPE %d", "DUP %d", "ask_who()"):
         assert needle in hub, needle
     js = (STATIC / "js" / "boards.js").read_text()
     assert "INFO pipe" in js and "FW calum_receiver" in js and "FW calum_sender" in js
@@ -69,3 +69,19 @@ def test_pipes_store_their_letter_and_the_hub_finds_them():
 def test_simulator_lists_pipes():
     sim = (ROOT / "sim" / "fake_esp.py").read_text()
     assert '"PIPES"' in sim and "OK PIPES" in sim
+
+
+def test_live_notes_cannot_stick():
+    # 1.3: NOTE <mask> from the app; the hub repeats it while keys are held,
+    # pipes let go without it, and Stop clears it.
+    hub = (FW / "calum_sender" / "calum_sender.ino").read_text()
+    pipe = (FW / "calum_receiver" / "calum_receiver.ino").read_text()
+    peers = (FW / "calum_sender" / "peers.h").read_text()
+    assert "PKT_NOTE" in peers and "NOTE_REPEAT_MS" in peers and "NOTE_TIMEOUT_MS" in peers
+    repeat = int(re.search(r"#define NOTE_REPEAT_MS\s+(\d+)", peers).group(1))
+    timeout = int(re.search(r"#define NOTE_TIMEOUT_MS\s+(\d+)", peers).group(1))
+    assert timeout >= 3 * repeat, "a pipe must survive two lost repeats"
+    assert '"NOTE"' in hub and "service_notes()" in hub and "live_mask = 0;" in hub
+    assert "NOTE_TIMEOUT_MS" in pipe and "live_open = false;" in pipe
+    # the valve is driven in one place only
+    assert pipe.count("digitalWrite(RELAY_PIN") == 2, "apply_valve() and close_valve() only"

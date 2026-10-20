@@ -1,4 +1,4 @@
-// Calum Organ v1.2 — ESP32 hub (sender, master clock)
+// Calum Organ v1.3 — ESP32 hub (sender, master clock)
 //
 // Parses a line-based protocol from USB serial, unicasts each grid row to
 // its pipe over ESP-NOW (with retry), and while playing broadcasts one TICK
@@ -9,12 +9,16 @@
 //
 // Protocol (see ../../app/protocol.py for the canonical spec):
 //   host -> sender:  PAT <tempo> <rows> <cols> <row0bits> ... <rowNbits>\n
-//                    PLAY\n  STOP\n  PING\n  PIPES\n
+//                    PLAY\n  STOP\n  PING\n  PIPES\n  NOTE <mask>\n
 //   sender -> host:  OK PAT <seq>  ACK <peer> <seq>  NAK <peer> <seq>
 //                    OK PLAY  OK STOP  PONG  STEP <n>  ERR <reason>
 //                    PIPE <peer> <mac> <fw|old>   (found a pipe; "old" = from PEER_MACS)
 //                    DUP <peer> <mac>             (a second board claims that letter)
-//                    OK PIPES                     (after listing every PIPE)
+//                    OK PIPES fw <version>        (after listing every PIPE)
+//
+// NOTE <mask> (0..255, bit i = pipe i held by a live key) gets no reply, so
+// it can go out between other requests without delay. The hub broadcasts it
+// at once and repeats it while any bit is set (pipes let go without it).
 //
 // PAT is accepted immediately (OK PAT) and delivered in the background;
 // ACK/NAK lines follow per peer. A new tempo applies on the next step. A new
@@ -60,6 +64,10 @@ static bool     have_pattern = false;
 #define HELLO_QUEUE 16
 static struct { uint8_t mac[6]; uint8_t pipe; uint16_t fw; } hello_q[HELLO_QUEUE];
 static uint8_t hello_n = 0;
+
+// ---- live notes ------------------------------------------------------------
+static uint8_t  live_mask    = 0;
+static uint32_t next_note_ms = 0;
 
 // ---- clock -----------------------------------------------------------------
 static bool     running      = false;
@@ -335,8 +343,29 @@ static void service_clock() {
   if ((int32_t)(now - next_tick_ms) > (int32_t)step_ms()) next_tick_ms = now + step_ms();
 }
 
+static void send_notes() {
+  PipePacket n = {};
+  n.magic = PIPE_MAGIC;
+  n.type  = PKT_NOTE;
+  n.pattern[0] = live_mask;
+  esp_now_send(BROADCAST_MAC, (const uint8_t *)&n, sizeof(PipePacket));
+  next_note_ms = millis() + NOTE_REPEAT_MS;
+}
+
+static void set_notes(uint8_t mask) {
+  bool released = live_mask & ~mask;
+  live_mask = mask;
+  send_notes();
+  if (released) { delay(2); send_notes(); }   // a let-go is sent twice
+}
+
+static void service_notes() {
+  if (live_mask && (int32_t)(millis() - next_note_ms) >= 0) send_notes();
+}
+
 static void stop_all() {
   running = false;
+  live_mask = 0;
   PipePacket stop = {};
   stop.magic = PIPE_MAGIC;
   stop.type  = PKT_STOP;
@@ -372,6 +401,7 @@ void loop() {
   service_clock();
   service_delivery();
   service_hellos();
+  service_notes();
 }
 
 // Simple space-tokenizer that mutates the buffer.
@@ -450,9 +480,13 @@ static void handle_line(char *line) {
   else if (strcmp(argv[0], "PLAY") == 0) handle_play();
   else if (strcmp(argv[0], "STOP") == 0) { stop_all(); Serial.println("OK STOP"); }
   else if (strcmp(argv[0], "PING") == 0) Serial.println("PONG");
+  else if (strcmp(argv[0], "NOTE") == 0 && argc == 2) {
+    int mask = atoi(argv[1]);
+    if (mask >= 0 && mask <= 255) set_notes((uint8_t)mask);   // no reply: see top
+  }
   else if (strcmp(argv[0], "PIPES") == 0) {
     for (int i = 0; i < NUM_PEERS; i++) if (known_mask & (1 << i)) print_pipe(i);
-    Serial.println("OK PIPES");
+    Serial.printf("OK PIPES fw %s\n", FW_VERSION);
     ask_who();                           // and listen again
   }
   else if (strcmp(argv[0], "INFO") == 0) {

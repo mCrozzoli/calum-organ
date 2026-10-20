@@ -186,3 +186,15 @@ test("link: a 1.1 hub's answer to PIPES isn't flagged as an error", async () => 
   assert.ok(!events.some((e) => e.type === "log" && e.level === "err"));
   await link.close();
 });
+
+test("link: live notes go straight out and the hub's firmware is known", async () => {
+  const { link } = await openDemo();
+  assert.equal(await link.listPipes(), "1.3.0");
+  const pat = link.sendPattern(120, [[1, 0]]);     // a request in flight…
+  await link.sendNotes(0b101);                       // …doesn't hold up a note
+  await pat;
+  assert.equal(link.transport.sender.notes, 0b101);
+  await link.sendStop();
+  assert.equal(link.transport.sender.notes, 0, "Stop lets go of live notes");
+  await link.close();
+});

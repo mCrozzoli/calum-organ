@@ -19,6 +19,7 @@ export class FakeSender {
     this._step = 0;
     this._timer = null;
     this.patterns = [];      // every pattern received (for tests)
+    this.notes = 0;          // live notes held (bit mask)
   }
 
   get playing() { return this._timer !== null; }
@@ -62,12 +63,15 @@ export class FakeSender {
       this._tick();
     } else if (line === "STOP") {
       this.stopClock();
+      this.notes = 0;
       this._write("OK STOP\n");
     } else if (line === "PING") {
       this._write("PONG\n");
     } else if (line === "PIPES") {
       this.announcePipes();
-      this._write("OK PIPES\n");
+      this._write("OK PIPES fw 1.3.0\n");
+    } else if (line.startsWith("NOTE ")) {
+      this.notes = parseInt(line.slice(5), 10) & 0xff;   // no reply, like the hub
     } else {
       this._write(`ERR unknown: ${line}\n`);
     }

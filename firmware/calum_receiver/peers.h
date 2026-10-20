@@ -17,8 +17,8 @@
 #include <stdint.h>
 
 // Printed at boot; must match the app version (tests/test_firmware.py).
-#define FW_VERSION "1.2.0"
-#define FW_CODE    0x0102      // in PKT_HELLO: major << 8 | minor
+#define FW_VERSION "1.3.0"
+#define FW_CODE    0x0103      // in PKT_HELLO: major << 8 | minor
 
 #define NUM_PEERS 8
 #define NO_PIPE   0xFF        // a pipe whose letter hasn't been set
@@ -48,9 +48,15 @@ enum : uint8_t {
   PKT_STOP    = 3,
   PKT_HELLO   = 4,
   PKT_WHO     = 5,
+  PKT_NOTE    = 6,      // live notes: pattern[0] = bit mask of pipes held now
 };
 
 #define HELLO_MS 3000
+
+// Live notes: the hub repeats PKT_NOTE this often while any pipe is held;
+// a pipe lets go of a live note after NOTE_TIMEOUT_MS without one.
+#define NOTE_REPEAT_MS  150
+#define NOTE_TIMEOUT_MS 600
 
 #define PIPE_MAGIC 0xC0
 

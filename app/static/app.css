@@ -449,6 +449,25 @@ dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 0; pad
 }
 
 dialog.wide { width: min(520px, calc(100vw - 32px)); }
+/* ---------- MIDI ---------- */
+#midiBtn.on { border-color: var(--green); color: var(--green); }
+#recBtn.recording { background: var(--red-fill); border-color: var(--red-fill); color: var(--on-red); }
+dialog.midi { width: min(620px, calc(100vw - 32px)); }
+dialog.midi .muted { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 6px 0 0; }
+.midi-device {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  padding: 10px 0; border-top: 1px solid var(--edge);
+}
+.midi-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.midi-head input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--accent); }
+.midi-device select { max-width: 100%; }
+.midi-bindings { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+.midi-learn {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding-top: 12px; border-top: 1px solid var(--edge);
+}
+.midi-last { font-family: Menlo, monospace; font-size: 11px; color: var(--muted); min-height: 1.4em; margin: 10px 0 0; }
+
 /* ---------- boards: hub & pipes ---------- */
 dialog.boards { width: min(600px, calc(100vw - 32px)); }
 dialog.boards .muted { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 6px 0 0; }

@@ -1,4 +1,4 @@
-// Calum Organ v1.2 — ESP32 pipe board (receiver)
+// Calum Organ v1.3 — ESP32 pipe board (receiver)
 //
 // Stores its row of the pattern and plays whichever step the sender's
 // broadcast TICK says, so all pipes stay locked to one clock. Broadcasts are
@@ -9,6 +9,11 @@
 //
 // A new pattern with the same step count is used from the next tick; one
 // with a different step count waits for step 0.
+//
+// Live notes (a MIDI keyboard on the app): PKT_NOTE carries which pipes are
+// held right now; the valve is open if the pattern OR a held key says so.
+// The hub repeats it while keys are held: if it stops coming for
+// NOTE_TIMEOUT_MS, the live note is let go (never a stuck valve).
 //
 // Which pipe it is (A–H) is stored in flash, so it survives firmware updates
 // and power cuts. The board announces itself (PKT_HELLO) so the hub finds it.
@@ -38,6 +43,8 @@ static bool back_ready = false;
 static PipePacket tick = {};          // latest tick, not yet played
 static bool tick_ready = false;
 static bool stop_req   = false;
+static uint8_t  note_mask  = 0;       // latest PKT_NOTE: pipes held live
+static bool     note_ready = false;
 
 static bool     who_req   = false;   // the hub asked who's there
 
@@ -54,6 +61,9 @@ static uint32_t last_tick_ms = 0;    // last *real* tick (for the watchdog)
 static uint32_t last_play_ms = 0;    // last step played, real or filled in
 static PipePacket last_tick  = {};   // last step played
 static uint16_t tempo        = 120;
+static bool     seq_open     = false;   // the pattern says open
+static bool     live_open    = false;   // a held key says open
+static uint32_t last_note_ms = 0;
 
 // How late a tick may be before we assume it was lost and fill it in.
 // ESP-NOW latency jitter is a few ms; a filled-in step is at most this late.
@@ -73,6 +83,7 @@ static void on_packet(const uint8_t *data, int len) {
     case PKT_WHO:     who_req = true; break;
     case PKT_TICK:    tick = *p; tick_ready = true; break;
     case PKT_STOP:    stop_req = true; break;
+    case PKT_NOTE:    note_mask = p->pattern[0]; note_ready = true; break;
   }
   portEXIT_CRITICAL(&g_mux);
 }
@@ -89,6 +100,19 @@ static void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
 #endif
 
 static void close_valve() { digitalWrite(RELAY_PIN, RELAY_IDLE); }
+
+// The one place the valve is driven: pattern, live key or valve test.
+static void apply_valve() {
+  bool open = seq_open || live_open || test_until_ms != 0;
+  digitalWrite(RELAY_PIN, open ? RELAY_ACTIVE : RELAY_IDLE);
+}
+
+// Which row/bit is this pipe? Its letter; a pipe without one goes by the
+// row the hub last sent it.
+static uint8_t my_index() {
+  if (my_pipe != NO_PIPE) return my_pipe;
+  return front.steps ? front.peer : NO_PIPE;
+}
 
 static char pipe_char() { return my_pipe == NO_PIPE ? '-' : (char)('A' + my_pipe); }
 
@@ -155,9 +179,9 @@ static void handle_command(char *line) {
       Serial.println("ERR pipe letter");
     }
   } else if (strcmp(line, "TEST") == 0) {
-    digitalWrite(RELAY_PIN, RELAY_ACTIVE);
     test_until_ms = millis() + 300;
     if (!test_until_ms) test_until_ms = 1;
+    apply_valve();
     Serial.println("OK TEST");
   } else if (*line) {
     Serial.println("ERR unknown");
@@ -192,8 +216,28 @@ static void service_identity() {
   if ((int32_t)(now - next_hello_ms) >= 0) send_hello();
   if (test_until_ms && (int32_t)(now - test_until_ms) >= 0) {
     test_until_ms = 0;
-    if (!running) close_valve();
+    apply_valve();
   }
+}
+
+static void service_notes() {
+  bool fresh;
+  uint8_t mask;
+  portENTER_CRITICAL(&g_mux);
+  fresh = note_ready;
+  note_ready = false;
+  mask = note_mask;
+  portEXIT_CRITICAL(&g_mux);
+  uint32_t now = millis();
+  bool was = live_open;
+  if (fresh) {
+    last_note_ms = now;
+    uint8_t i = my_index();
+    live_open = i < NUM_PEERS && ((mask >> i) & 1);
+  } else if (live_open && now - last_note_ms > NOTE_TIMEOUT_MS) {
+    live_open = false;                   // the hub stopped repeating: let go
+  }
+  if (live_open != was) apply_valve();
 }
 
 static void play_step(const PipePacket &t) {
@@ -217,12 +261,14 @@ static void play_step(const PipePacket &t) {
     uint16_t s = t.step % front.steps;
     open = (front.pattern[s >> 3] >> (s & 7)) & 1;
   }
-  digitalWrite(RELAY_PIN, open ? RELAY_ACTIVE : RELAY_IDLE);
+  seq_open = open;
+  apply_valve();
 }
 
 void loop() {
   read_commands();
   service_identity();
+  service_notes();
 
   bool do_stop, have_tick;
   PipePacket t;
@@ -236,7 +282,9 @@ void loop() {
   if (do_stop) {
     if (running) Serial.println("stop");
     running = false;
-    close_valve();
+    seq_open = false;
+    live_open = false;                   // Stop silences everything
+    apply_valve();
     return;
   }
   if (have_tick) {
@@ -265,6 +313,7 @@ void loop() {
   if (running && now - last_tick_ms > timeout) {
     Serial.println("tick timeout, stop");
     running = false;
-    close_valve();
+    seq_open = false;
+    apply_valve();
   }
 }

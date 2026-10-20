@@ -27,6 +27,7 @@ export class SerialLink {
     this._buf = "";
     this._waiter = null;
     this._chain = Promise.resolve();
+    this.hubFw = null;           // "1.1" | "1.2" | "1.3.0"…: learnt from PIPES
   }
 
   get isOpen() { return this.transport !== null; }
@@ -113,6 +114,7 @@ export class SerialLink {
       this._setPlaying(ack.detail === "PLAY");
     } else if (ack.kind === "OK" && ack.detail === "READY") {
       // Sender (re)booted, e.g. reset by opening the port: no pattern, stopped.
+      this.hubFw = null;
       this._setPlaying(false);
       this._emit("ready");
     }
@@ -189,7 +191,24 @@ export class SerialLink {
   sendStop() { return this.request(protocol.encodeStop(), "STOP"); }
   // Hub 1.2+: list the pipes it knows (PIPE lines, then OK PIPES). A 1.1
   // hub answers ERR unknown.
-  listPipes() { return this.request("PIPES\n", "PIPES"); }
+  // Also tells which firmware the hub runs (live notes need 1.3).
+  async listPipes() {
+    try {
+      const ack = await this.request("PIPES\n", "PIPES");
+      this.hubFw = ack.detail.match(/fw (\S+)/)?.[1] || "1.2";
+    } catch (e) {
+      if (e instanceof SenderError) this.hubFw = "1.1";
+      throw e;
+    }
+    return this.hubFw;
+  }
+
+  // Live notes: which pipes are held right now (bit i = pipe i). No reply
+  // and no queue: it goes straight out, so keys feel immediate.
+  sendNotes(mask) {
+    if (!this.transport) return Promise.resolve();
+    return this.transport.write(`NOTE ${mask & 0xff}\n`).catch(() => {});
+  }
 }
 
 function classify(ack) {

@@ -1,4 +1,4 @@
-// Calum Organ v1.2 — frontend
+// Calum Organ v1.3 — frontend
 // Pure vanilla JS modules, no build step. Runs in two places:
 //   - opened by the double-click app (Organ.command): talks to the local
 //     Python server (LocalBackend)
@@ -13,7 +13,9 @@
 //   - Demo organ: labelled DEMO and drawn like the preview; nothing real moves.
 
 import { createBackend, JoinError, OnlineBackend } from "./backends.js";
-import { LETTERS, inspect, install, setPipeLetter, testValve, latestVersion, plan, suggestLetter, sameMac } from "./boards.js";
+import { LETTERS, inspect, install, setPipeLetter, testValve, latestVersion, plan, suggestLetter, sameMac, compareVersions } from "./boards.js";
+import { MidiPorts, LiveNotes, mapMessage, defaultSettings, deviceKind, controlKey, describeControl, noteLabel,
+         gridFrame, ledMessages, recordStep } from "./midi.js";
 import { RoomHost, RoomGuestBackend, cleanCode, isCode, makeCode } from "./room.js";
 import { validatePattern } from "./protocol.js";
 import { OrganSound } from "./sound.js";
@@ -45,6 +47,8 @@ const state = {
   sending: false,
   sendError: null,
   peers: [],
+  live: 0,               // pipes held open by MIDI keys right now (bit mask)
+  recording: false,      // MIDI keys pressed while playing are written into the grid
   boards: [],            // per pipe: {mac, fw} the hub reported (fw "old": its 1.1 list)
   presetName: "",       // preset the screen was loaded from / saved as
   savedKey: null,       // patternKey() at last save/load; null = never saved
@@ -291,6 +295,7 @@ function drawGrid() {
       ctx.setLineDash([]);
     }
   }
+  schedulePads();
 }
 
 function cellAt(evt) {
@@ -416,10 +421,10 @@ function renderPeers() {
     el.classList.toggle("unused", !used);
 
     const row = used ? state.grid[i] : [];
-    const open = used && state.playhead >= 0 && row[state.playhead] === 1;
+    const open = used && pipeOpen(i);
     el.classList.toggle("open", open);
     el.querySelector(".state-text").textContent =
-      !used ? "—" : state.playhead < 0 ? "idle" : open ? "open" : "closed";
+      !used ? "—" : open ? (isLivePipe(i) ? "open (key)" : "open") : state.playhead < 0 ? "idle" : "closed";
 
     const d = deliveryOf(i);
     const b = state.boards[i];
@@ -719,6 +724,7 @@ async function play() {
 }
 
 async function stop() {
+  releaseLive();                       // Stop silences live notes too
   if (inRoomAsGuest()) { remoteTransport("stop"); return; }
   if (!state.connected) { stopPreview(); return; }
   state.transportBusy = true;
@@ -736,6 +742,7 @@ async function stop() {
 function setPlayhead(step) {
   if (room && step !== state.playhead) room.step(step);
   state.playhead = step;
+  if (step >= 0) state.lastStepAt = Date.now();
   drawGrid();
   renderPeers();
   updateSoundGates();
@@ -1239,6 +1246,11 @@ function onBackendEvent(ev) {
         state.peers = freshPeers();
         setPlayhead(-1);
         if (!state.shared) schedulePatternSend();   // shared: the server resends
+        break;
+      case "hub":
+        hubFw = ev.fw;
+        if (hubPlaysLive() && state.live) backend.sendNotes(state.live);
+        renderMidi();
         break;
       case "pipe":
         state.boards[ev.peer] = { mac: ev.mac, fw: ev.fw || "?" };
@@ -1811,7 +1823,11 @@ function saveStage() {
 }
 
 // What a pipe's valve is doing right now (same rule as the pipe cards).
-const pipeOpen = (i) => i < state.rows && state.playhead >= 0 && state.grid[i]?.[state.playhead] === 1;
+// Open by the pattern, or held by a MIDI key.
+function pipeOpen(i) {
+  if (i >= state.rows) return false;
+  return (state.playhead >= 0 && state.grid[i]?.[state.playhead] === 1) || ((state.live >> i) & 1) === 1;
+}
 
 function updateSoundGates() {
   if (!sound.active) return;
@@ -2100,6 +2116,356 @@ function meterLoop() {
   requestAnimationFrame(frame);
 }
 
+// ---------------------------------------------------------------- MIDI
+// Keyboards, pads and pad grids (js/midi.js). Held keys open pipes live, on
+// top of the pattern: the hub (1.3+) gets "NOTE <mask>", the simulated sound
+// opens the same pipes. Record writes pressed keys into the grid.
+const MIDI_KEY = "calumOrgan.midi.v1";
+const live = new LiveNotes();
+let midiStore = loadMidiStore();
+let midiDevices = [];
+let midiLearn = null;          // {target} or {base: deviceName}: waiting for a control
+let midiLast = "";
+let padPage = 0;
+let padFollow = true;          // pad grids follow the playhead's page
+let warnedOldHub = false;
+let hubFw = null;              // from the hub's answer to PIPES
+
+const midiPorts = new MidiPorts({ onMessage: onMidi, onDevices: onMidiDevices });
+
+function loadMidiStore() {
+  try {
+    const s = JSON.parse(localStorage.getItem(MIDI_KEY));
+    if (s && typeof s === "object" && s.devices) return s;
+  } catch (_) {}
+  return { on: false, devices: {} };
+}
+function saveMidiStore() {
+  try { localStorage.setItem(MIDI_KEY, JSON.stringify(midiStore)); } catch (_) {}
+}
+function settingsFor(name) {
+  midiStore.devices[name] ||= defaultSettings(name);
+  return midiStore.devices[name];
+}
+
+const isLivePipe = (i) => ((state.live >> i) & 1) === 1;
+const hubPlaysLive = () => compareVersions(hubFw, "1.3") >= 0;
+
+async function enableMidi({ sysex = false, quiet = false } = {}) {
+  try {
+    await midiPorts.enable({ sysex });
+    midiStore.on = true;
+    saveMidiStore();
+  } catch (e) {
+    if (!quiet) toast(e?.name === "SecurityError" || e?.name === "NotAllowedError"
+      ? "MIDI wasn't allowed: allow it in the address bar's site settings, then try again"
+      : `MIDI couldn't start: ${e.message || e}`, "err");
+  }
+  renderMidi();
+}
+
+function onMidiDevices(devices) {
+  const before = new Set(midiDevices.map((d) => d.name));
+  midiDevices = devices;
+  for (const d of devices) {
+    settingsFor(d.name);
+    if (!before.has(d.name)) logLine(`MIDI: ${d.name} connected`, "info");
+    // A pad grid gets switched into the mode where the app drives its LEDs.
+    if (d.profile && settingsFor(d.name).mode === "grid" && (!d.profile.sysex || midiPorts.sysex)) {
+      for (const bytes of d.profile.init) midiPorts.send(d, bytes);
+      d.lastFrame = null;
+    }
+  }
+  for (const name of before) if (!devices.some((d) => d.name === name)) logLine(`MIDI: ${name} disconnected`, "info");
+  saveMidiStore();
+  renderMidi();
+  schedulePads();
+}
+
+function onMidi(device, msg) {
+  const settings = settingsFor(device.name);
+  if (midiLearn) {
+    if (msg.type === "off" || (msg.type === "cc" && midiLearn.target !== "tempo" && msg.value < 64)) return;
+    if (midiLearn.base) {
+      if (msg.type !== "on" || midiLearn.base !== device.name) return;
+      settings.base = msg.num;
+      toast(`${device.name}: ${noteLabel(msg.num)} now plays pipe A`, "ok");
+    } else {
+      settings.bindings[controlKey(msg)] = midiLearn.target;
+      settings.enabled = true;
+      toast(`Linked ${describeControl(controlKey(msg))} on ${device.name} to ${targetLabel(midiLearn.target)}`, "ok");
+    }
+    midiLearn = null;
+    saveMidiStore();
+    renderMidi();
+    return;
+  }
+  if (!settings.enabled) return;
+  const action = mapMessage(settings, msg, {
+    pipeNotes: stage.pipes.map((p) => p.note), rows: state.rows, cols: state.cols,
+    page: padPage, profile: settings.mode === "grid" ? device.profile : null,
+  });
+  midiLast = `${device.name}: ${msg.type === "cc" ? `CC ${msg.num} = ${msg.value}` : `${noteLabel(msg.num)} ${msg.type}`}`
+    + (action ? ` → ${actionLabel(action)}` : "");
+  if ($("midiDialog").open) $("midiLast").textContent = midiLast;
+  if (!action) return;
+  const source = `${device.id}|${controlKey(msg)}`;
+  switch (action.kind) {
+    case "pipe":
+      if (action.down) {
+        live.press(source, action.pipe);
+        if (state.recording) recordPipe(action.pipe);
+      } else {
+        live.release(source);
+      }
+      updateLive();
+      break;
+    case "sustain":
+      live.setSustain(action.down);
+      updateLive();
+      break;
+    case "tempo":
+      if (!conducts()) break;
+      tempoInput.value = action.tempo;
+      tempoInput.dispatchEvent(new Event("change"));
+      break;
+    case "playstop": if (!state.transportBusy) (state.playing ? stop() : play()); break;
+    case "record": toggleRecord(); break;
+    case "clear": clearBtn.click(); break;
+    case "cell":
+      if (!mayPaintRow(action.row)) break;
+      state.grid[action.row][action.col] ^= 1;
+      paintedCells.push([action.row, action.col, state.grid[action.row][action.col]]);
+      onGridChanged();
+      break;
+    case "page": {
+      const pages = Math.ceil(state.cols / 8);
+      padPage = clamp(padPage + action.delta, 0, pages - 1);
+      padFollow = false;
+      schedulePads();
+      break;
+    }
+  }
+}
+
+const targetLabel = (t) => (t.startsWith("pipe:") ? `pipe ${pipeName(+t.slice(5))}`
+  : { playstop: "Play/Stop", record: "Record", clear: "Clear", tempo: "Tempo", sustain: "Sustain" }[t] || t);
+const actionLabel = (a) => (a.kind === "pipe" ? `pipe ${pipeName(a.pipe)}${a.down ? "" : " off"}`
+  : a.kind === "cell" ? `step ${a.col + 1} of pipe ${pipeName(a.row)}`
+  : a.kind === "tempo" ? `tempo ${a.tempo}` : a.kind === "sustain" ? `sustain ${a.down ? "on" : "off"}`
+  : a.kind === "page" ? "page" : targetLabel(a.kind));
+
+// Held keys changed: tell the organ (and the simulated sound, the screen).
+function updateLive() {
+  const mask = live.mask;
+  if (mask === state.live) return;
+  state.live = mask;
+  if (state.connected && backend?.sendNotes) {
+    if (hubPlaysLive()) backend.sendNotes(mask);
+    else if (mask && !warnedOldHub) {
+      warnedOldHub = true;
+      toast("The hub needs firmware 1.3 to play the pipes live: update it in More ▾ → Boards. "
+        + "Meanwhile keys play the simulated sound only.", "warn");
+    }
+  }
+  updateSoundGates();
+  renderPeers();
+  schedulePads();
+}
+
+function releaseLive() {
+  live.clear();
+  updateLive();
+}
+
+// ---- record
+function toggleRecord() {
+  state.recording = !state.recording;
+  renderRecord();
+  if (state.recording && !state.playing) toast("Record is on: press Play, then play the keys");
+}
+
+function renderRecord() {
+  const b = $("recBtn");
+  b.classList.toggle("recording", state.recording);
+  b.setAttribute("aria-pressed", String(state.recording));
+  b.hidden = !(midiStore.on && midiDevices.length) && !state.recording;
+}
+
+function recordPipe(pipe) {
+  if (!state.playing || state.playhead < 0 || !mayPaintRow(pipe) || pipe >= state.rows) return;
+  const col = recordStep(state.playhead, state.lastStepAt, 60000 / state.tempo, Date.now(), state.cols);
+  if (state.grid[pipe][col] === 1) return;
+  state.grid[pipe][col] = 1;
+  paintedCells.push([pipe, col, 1]);
+  onGridChanged();
+}
+
+// ---- pad grid LEDs (throttled to one update per frame)
+let padsQueued = false;
+function schedulePads() {
+  if (padsQueued || !midiDevices.some((d) => d.profile)) return;
+  padsQueued = true;
+  requestAnimationFrame(() => { padsQueued = false; renderPads(); });
+}
+
+function renderPads() {
+  const pages = Math.max(1, Math.ceil(state.cols / 8));
+  if (padFollow && state.playhead >= 0) padPage = Math.floor(state.playhead / 8);
+  padPage = clamp(padPage, 0, pages - 1);
+  for (const d of midiDevices) {
+    const s = settingsFor(d.name);
+    if (!d.profile || !d.output || !s.enabled || s.mode !== "grid") continue;
+    if (d.profile.sysex && !midiPorts.sysex) continue;
+    const frame = gridFrame({ grid: state.grid, rows: state.rows, cols: state.cols,
+                              playhead: state.playhead, page: padPage, live: state.live });
+    for (const bytes of ledMessages(d.profile, frame, d.lastFrame)) midiPorts.send(d, bytes);
+    d.lastFrame = frame;
+  }
+}
+
+// ---- the MIDI panel
+function renderMidi() {
+  const btn = $("midiBtn");
+  const n = midiDevices.filter((d) => settingsFor(d.name).enabled).length;
+  btn.textContent = midiStore.on && n ? `🎹 MIDI · ${n}` : "🎹 MIDI";
+  btn.classList.toggle("on", midiStore.on && n > 0);
+  renderRecord();
+  if (!$("midiDialog").open) return;
+  const supported = MidiPorts.supported;
+  $("midiUnsupported").hidden = supported;
+  $("midiOff").hidden = !supported || !!midiPorts.access;
+  $("midiOn").hidden = !midiPorts.access;
+  $("midiLast").textContent = midiLast || "Play a key or move a control: it shows here.";
+  $("midiHubNote").hidden = !(state.connected && !state.demo && hubFw && !hubPlaysLive());
+  const list = $("midiDevices");
+  list.innerHTML = "";
+  if (midiPorts.access && !midiDevices.length) {
+    list.innerHTML = "<p class='muted'>No MIDI controller found. Plug one in by USB: it shows up here.</p>";
+  }
+  for (const d of midiDevices) list.appendChild(deviceRow(d));
+  const learnBtn = $("midiLearnBtn");
+  learnBtn.textContent = midiLearn ? "Waiting… (click to cancel)" : "Learn";
+  learnBtn.classList.toggle("accent", !midiLearn);
+  $("midiLearnHint").textContent = midiLearn
+    ? (midiLearn.base ? `Press the key or pad that should play pipe A on ${midiLearn.base}.`
+      : `Now press the key, pad or button (or move the knob) for ${targetLabel(midiLearn.target)}.`)
+    : "";
+}
+
+function deviceRow(d) {
+  const s = settingsFor(d.name);
+  const row = document.createElement("div");
+  row.className = "midi-device";
+  const head = document.createElement("div");
+  head.className = "midi-head";
+  const on = document.createElement("input");
+  on.type = "checkbox";
+  on.checked = s.enabled;
+  on.setAttribute("aria-label", `Use ${d.name}`);
+  on.addEventListener("change", () => { s.enabled = on.checked; if (!on.checked) releaseLive(); saveMidiStore(); renderMidi(); schedulePads(); });
+  const name = document.createElement("b");
+  name.textContent = d.name;
+  const kind = document.createElement("span");
+  kind.className = "muted";
+  kind.textContent = d.profile ? `pad grid (${d.profile.name})` : deviceKind(d.name) === "pads" ? "pads" : "keyboard";
+  head.append(on, name, kind);
+
+  const mode = document.createElement("select");
+  mode.setAttribute("aria-label", `How ${d.name} plays`);
+  mode.add(new Option("Keys play the pipe tuned closest (by pitch)", "pitch"));
+  mode.add(new Option(`Pads in a row from ${noteLabel(s.base)} play A, B, C…`, "row"));
+  if (d.profile) mode.add(new Option("Pad grid: pads edit the pattern, side buttons play the pipes", "grid"));
+  mode.value = s.mode;
+  mode.disabled = !s.enabled;
+  mode.addEventListener("change", () => {
+    s.mode = mode.value;
+    d.lastFrame = null;
+    saveMidiStore();
+    if (s.mode === "grid" && d.profile && (!d.profile.sysex || midiPorts.sysex)) {
+      for (const bytes of d.profile.init) midiPorts.send(d, bytes);
+    }
+    renderMidi();
+    schedulePads();
+  });
+  row.append(head, mode);
+
+  if (s.mode === "row") {
+    const base = document.createElement("button");
+    base.type = "button";
+    base.textContent = "Set the pad for pipe A…";
+    base.addEventListener("click", () => { midiLearn = { base: d.name }; renderMidi(); });
+    row.append(base);
+  }
+  if (s.mode === "pitch") {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "Uses the pipe pitches in the Listen panel: set them to the real pipes' notes.";
+    row.append(p);
+  }
+  if (s.mode === "grid" && d.profile?.sysex && !midiPorts.sysex) {
+    const allow = document.createElement("button");
+    allow.type = "button";
+    allow.className = "accent";
+    allow.textContent = `Light up the ${d.profile.name}…`;
+    allow.title = "The browser asks to allow full MIDI access: the Launchpad needs it to switch into its pad-grid mode.";
+    allow.addEventListener("click", () => enableMidi({ sysex: true }));
+    row.append(allow);
+  }
+  const keys = Object.entries(s.bindings);
+  if (keys.length) {
+    const ul = document.createElement("ul");
+    ul.className = "midi-bindings";
+    for (const [key, target] of keys) {
+      const li = document.createElement("li");
+      li.textContent = `${describeControl(key)} → ${targetLabel(target)} `;
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "link";
+      x.textContent = "remove";
+      x.addEventListener("click", () => { delete s.bindings[key]; saveMidiStore(); renderMidi(); });
+      li.append(x);
+      ul.append(li);
+    }
+    row.append(ul);
+  }
+  return row;
+}
+
+function openMidiDialog() {
+  moreMenu.open = false;
+  const sel = $("midiTarget");
+  if (!sel.options.length) {
+    for (let i = 0; i < MAX_PIPES; i++) sel.add(new Option(`Pipe ${pipeName(i)}`, `pipe:${i}`));
+    sel.add(new Option("Play / Stop", "playstop"));
+    sel.add(new Option("Record", "record"));
+    sel.add(new Option("Clear", "clear"));
+    sel.add(new Option("Tempo (a knob or fader)", "tempo"));
+    sel.add(new Option("Sustain (a pedal or button)", "sustain"));
+  }
+  $("midiDialog").showModal();
+  renderMidi();
+}
+
+$("midiBtn").addEventListener("click", openMidiDialog);
+$("midiEnable").addEventListener("click", () => enableMidi());
+$("midiLearnBtn").addEventListener("click", () => {
+  midiLearn = midiLearn ? null : { target: $("midiTarget").value };
+  renderMidi();
+});
+$("midiDialog").addEventListener("close", () => { midiLearn = null; });
+$("recBtn").addEventListener("click", toggleRecord);
+
+// MIDI was on last time and the browser still allows it: turn it on quietly.
+async function restoreMidi() {
+  renderMidi();
+  if (!midiStore.on || !MidiPorts.supported) return;
+  try {
+    const p = await navigator.permissions.query({ name: "midi" });
+    if (p.state === "granted") await enableMidi({ quiet: true });
+  } catch (_) { /* no permissions API: wait for a click */ }
+}
+
 // ---------------------------------------------------------------- theme
 // Auto follows the computer's light/dark setting; Light and Dark override it.
 // The inline script in index.html applies it before first paint.
@@ -2263,5 +2629,6 @@ async function init() {
   }
   refreshPorts();
   refreshPresets();
+  if (state.role === "host") restoreMidi();
 }
 init();

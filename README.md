@@ -1,4 +1,4 @@
-# Calum Organ — Pipe Madness v1.2
+# Calum Organ — Pipe Madness v1.3
 
 A step sequencer that drives a pipe organ built from solenoid valves. You
 draw a rhythm grid in the browser: each row is a pipe (A–H), each column a
@@ -98,6 +98,36 @@ start of the next bar so the rhythm doesn't stumble.
 - If the sender reboots, the app notices and resends the pattern.
 - Reloading the page or opening a second tab shows what the organ is
   playing; it never overwrites it with a blank grid.
+
+## MIDI keyboards and pads
+
+Plug a MIDI controller into the computer by USB and click **🎹 MIDI** (top
+right; Chrome or Edge). The first time, **Turn on MIDI** and allow it.
+Controllers are found as they're plugged in and out.
+
+- **Keyboard** (plug and play): each key plays the pipe **tuned closest**
+  to it, using the pitches in the Listen panel (set those to the real
+  pipes' notes). Held keys open their pipes straight away, **on top of the
+  pattern**; the **sustain pedal** keeps them open.
+- **Pads** (nanoPAD, MPD…): consecutive pads play A, B, C… from a base note
+  (36 by default; **Set the pad for pipe A…** changes it).
+- **Pad grids** (Launchpad Mini MK3, Launchpad X, APC mini, APC mini mk2):
+  the 8×8 pads show the pattern and edit it (rows = pipes A–H, 8 steps per
+  page, following the playhead; the arrow buttons change page), the side
+  buttons play each pipe live. A Launchpad needs **Light up the
+  Launchpad…** once: the browser asks for full MIDI access to switch it into
+  that mode. On the APC minis, the rightmost fader sets the tempo.
+- **Link a control**: choose Pipe A–H, Play/Stop, Record, Clear, Tempo or
+  Sustain, click **Learn**, then press the key, pad or button (or move the
+  knob). Links are saved per controller in this browser.
+- **● Rec** (next to Clear): while the pattern plays, keys you press are
+  written into the grid at the current step (a key in the second half of a
+  step lands on the next one).
+
+**■ Stop** also lets go of every live note. Playing the real pipes live
+needs hub firmware 1.3 (More ▾ → Boards); with an older hub, keys play the
+simulated sound only. MIDI works in the online version; the local app plays
+live notes on the simulated sound only.
 
 ## Playing together
 
@@ -319,16 +349,17 @@ Line-based ASCII over USB serial, 115200 baud:
 
 ```
 host → hub:  PAT <tempo> <rows> <cols> <row0bits> ... <rowNbits>
-             PLAY   STOP   PING   PIPES   INFO
+             PLAY   STOP   PING   PIPES   INFO   NOTE <mask>
 hub → host:  OK PAT <seq>   ACK <peer> <seq>   NAK <peer> <seq>
              OK PLAY   OK STOP   OK READY   PONG   STEP <n>   ERR <reason>
-             PIPE <peer> <mac> <fw|old>   DUP <peer> <mac>   OK PIPES
+             PIPE <peer> <mac> <fw|old>   DUP <peer> <mac>   OK PIPES fw <version>
 
 host → pipe: INFO   PIPE <A..H|->   TEST
 pipe → host: INFO pipe <letter> fw <version> mac <mac>   OK PIPE <letter>   OK TEST
 ```
 
-`PIPE` lines come when the hub finds a pipe (and in answer to `PIPES`);
+`NOTE <mask>` (live notes: bit i = pipe i held) gets no reply, so it never
+waits behind a pattern. `PIPE` lines come when the hub finds a pipe (and in answer to `PIPES`);
 `old` means a 1.1 pipe from its built-in list. `DUP` means a second board
 claims a letter. A NAK for a pipe no board has claimed comes at once.
 
@@ -342,7 +373,10 @@ Over the radio (`firmware/*/peers.h`), the hub unicasts one `PKT_PATTERN`
 per pipe (with retry), broadcasts `PKT_TICK {step, tempo, rows}` every step,
 and broadcasts `PKT_STOP` to stop. Pipes broadcast `PKT_HELLO {letter,
 firmware}` every 3 s (and soon after the hub's `PKT_WHO` at its boot); a
-pipe with a letter only accepts its own row.
+pipe with a letter only accepts its own row. Live notes travel as a
+broadcast `PKT_NOTE {mask}`, repeated every 150 ms while any key is held;
+a pipe lets go if it hears none for 600 ms, so a lost "key up" can't leave
+a valve open.
 
 ## Project layout
 
@@ -366,6 +400,7 @@ calum-organ/
 │       ├── js/backends.js  # local app vs online (Web Serial / demo)
 │       ├── js/room.js      # online rooms: host hub, guest backend, roles
 │       ├── js/boards.js    # Boards panel: identify, install, set pipe letter
+│       ├── js/midi.js      # MIDI: devices, mapping, learn, pad-grid LEDs
 │       ├── js/link.js      # serial link + Web Serial transport
 │       ├── js/protocol.js  # same protocol as app/protocol.py
 │       ├── js/demo.js      # simulated organ
@@ -416,6 +451,9 @@ calum-organ/
   themselves; the hub finds them (no MAC table to edit). Boards panel:
   identify a board over USB, install hub or pipe firmware, set a pipe's
   letter, click its valve.
+- v1.3 (Oct 2026): MIDI keyboards and pads play the pipes live (keys by
+  pitch, sustain pedal, pads in a row, pad grids that show and edit the
+  pattern, MIDI learn, record into the grid). Firmware: live notes.
 
 ## Credits and licences
 
