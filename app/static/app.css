@@ -449,9 +449,39 @@ dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 0; pad
 }
 
 dialog.wide { width: min(520px, calc(100vw - 32px)); }
-.fw-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--edge); }
-.fw-row p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
-.fw-row esp-web-install-button { flex: none; }
+/* ---------- boards: hub & pipes ---------- */
+dialog.boards { width: min(600px, calc(100vw - 32px)); }
+dialog.boards .muted { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 6px 0 0; }
+.hub-hears { margin: 0 0 14px; }
+.hub-pipes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.hub-pipe {
+  display: inline-flex; flex-direction: column; align-items: center; min-width: 54px;
+  padding: 4px 6px; border-radius: 6px; border: 1px solid var(--edge);
+  background: var(--panel2); font-size: 11px; color: var(--muted);
+}
+.hub-pipe b { font-size: 14px; color: var(--text); }
+.hub-pipe.ok { border-color: var(--green); }
+.hub-pipe.old { border-color: var(--yellow); }
+.board-what { font-size: 15px; font-weight: 600; margin: 0; }
+.board-mac { font-family: Menlo, monospace; }
+.board-role { border: 0; padding: 0; margin: 12px 0; display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
+.board-role legend { color: var(--muted); font-size: 12px; padding: 0; margin-bottom: 6px; }
+.board-role label { display: inline-flex; align-items: center; gap: 6px; }
+.board-role input[type="radio"] {
+  width: 18px; height: 18px; min-height: 0; margin: 0; padding: 0; accent-color: var(--accent);
+}
+.board-warn { color: var(--yellow); font-size: 13px; margin: 0 0 10px; }
+.board-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.board-progress { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin-top: 12px; }
+.board-progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+.board-status { min-height: 1.4em; margin: 10px 0 0; font-size: 13px; line-height: 1.45; }
+.board-status.err { color: var(--red); }
+.board-status.ok { color: var(--green); }
+.board-log { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.board-log pre {
+  max-height: 160px; overflow: auto; margin: 6px 0 0; padding: 8px; border-radius: 6px;
+  background: var(--panel2); font-size: 11px; white-space: pre-wrap;
+}
 button.quit:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); }
 button.danger { background: var(--red-fill); border-color: var(--red-fill); color: var(--on-red); font-weight: 600; }
 button.danger:hover:not(:disabled) { background: var(--red-hover); }

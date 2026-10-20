@@ -1,4 +1,4 @@
-// Calum Organ v1.1 — frontend
+// Calum Organ v1.2 — frontend
 // Pure vanilla JS modules, no build step. Runs in two places:
 //   - opened by the double-click app (Organ.command): talks to the local
 //     Python server (LocalBackend)
@@ -13,6 +13,7 @@
 //   - Demo organ: labelled DEMO and drawn like the preview; nothing real moves.
 
 import { createBackend, JoinError, OnlineBackend } from "./backends.js";
+import { LETTERS, inspect, install, setPipeLetter, testValve, latestVersion, plan, suggestLetter, sameMac } from "./boards.js";
 import { RoomHost, RoomGuestBackend, cleanCode, isCode, makeCode } from "./room.js";
 import { validatePattern } from "./protocol.js";
 import { OrganSound } from "./sound.js";
@@ -44,6 +45,7 @@ const state = {
   sending: false,
   sendError: null,
   peers: [],
+  boards: [],            // per pipe: {mac, fw} the hub reported (fw "old": its 1.1 list)
   presetName: "",       // preset the screen was loaded from / saved as
   savedKey: null,       // patternKey() at last save/load; null = never saved
   quitting: false,
@@ -420,6 +422,8 @@ function renderPeers() {
       !used ? "—" : state.playhead < 0 ? "idle" : open ? "open" : "closed";
 
     const d = deliveryOf(i);
+    const b = state.boards[i];
+    el.title = b ? `Pipe ${pipeName(i)}: board ${b.mac}${b.fw === "old" ? " (firmware 1.1)" : `, firmware ${b.fw}`}` : "";
     el.querySelector(".dot").className = `dot ${d.cls}`;
     el.querySelector(".delivery").textContent = d.text;
 
@@ -464,7 +468,7 @@ function renderTruth() {
     mode = silent ? "NO BEAT" : "LIVE · PLAYING";
     cls = silent ? "warn" : "live";
     text = silent
-      ? "The organ said it is playing, but no steps are arriving from the sender."
+      ? "The organ said it is playing, but no steps are arriving from the hub."
       : `Playhead shows the step the organ is playing (${state.port}).`;
   } else {
     mode = "LIVE · STOPPED";
@@ -722,7 +726,7 @@ async function stop() {
   try {
     await backend.stop();
   } catch (e) {
-    toast("Stop failed: " + e.message + " (receivers close on their own after 2 s without a beat)", "err");
+    toast("Stop failed: " + e.message + " (pipes close on their own after 2 s without a beat)", "err");
   } finally {
     state.transportBusy = false;
     renderTruth();
@@ -939,59 +943,214 @@ async function importPresets(file) {
   } catch (e) { toast("Import failed: " + e.message, "err"); }
 }
 
-// ---------------------------------------------------------------- firmware update
-// Uses Espressif's ESP Web Tools (Web Serial) to flash the boards from the
-// page. Loaded only when the dialog opens, so the app itself needs no CDN.
-const ESP_WEB_TOOLS = "https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module";
+// ---------------------------------------------------------------- boards: hub & pipes
+// Set up boards one at a time over USB (js/boards.js does the talking):
+// what is this board, install hub or pipe firmware, give a pipe its letter,
+// click its valve. The hub reports which pipes it hears (PIPE lines), shown
+// at the top while the organ is connected.
+const board = { port: null, info: null, busy: false, latest: null };
 
-async function openFirmwareDialog() {
-  const dlg = $("firmwareDialog");
+function boardLog(text) {
+  const pre = $("boardLog");
+  pre.textContent += `${text}\n`;
+  if (pre.textContent.length > 20000) pre.textContent = pre.textContent.slice(-15000);
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function boardStatus(text, cls = "") {
+  const el = $("boardStatus");
+  el.textContent = text;
+  el.className = `board-status ${cls}`;
+}
+
+function renderHubHears() {
+  const live = state.connected && !state.demo;
+  const any = state.boards.some(Boolean);
+  $("hubHears").hidden = !(state.connected && any);
+  const el = $("hubPipes");
+  el.innerHTML = "";
+  for (let i = 0; i < MAX_PIPES; i++) {
+    const b = state.boards[i];
+    const d = document.createElement("span");
+    d.className = `hub-pipe ${b ? (b.fw === "old" ? "old" : "ok") : ""}`;
+    d.title = b ? `Pipe ${pipeName(i)}: board ${b.mac}${b.fw === "old" ? " (firmware 1.1, from the hub's built-in list)" : `, firmware ${b.fw}`}` : `No board has said it's pipe ${pipeName(i)}`;
+    const name = document.createElement("b");
+    name.textContent = pipeName(i);
+    d.append(name, b ? (b.fw === "old" ? "1.1" : "✓") : "—");
+    el.appendChild(d);
+  }
+  if (!live && any) $("hubHears").querySelector("p").textContent = "Pipes the demo hub hears:";
+}
+
+function selectedRole() {
+  return document.querySelector("input[name=boardRole]:checked")?.value || "pipe";
+}
+
+function renderBoardCard() {
+  const info = board.info;
+  $("boardNone").hidden = !!info;
+  $("boardCard").hidden = !info;
+  if (!info) return;
+  const what = info.kind === "hub" ? "Hub"
+    : info.kind === "pipe" ? (info.letters && info.pipe !== null ? `Pipe ${LETTERS[info.pipe]}` : "Pipe board")
+    : "An ESP32 without the organ's firmware";
+  const fw = info.fw ? ` · firmware ${info.fw}` : "";
+  const letterNote = info.kind === "pipe" && info.letters && info.pipe === null ? " · no letter yet"
+    : info.kind === "pipe" && !info.letters ? " · letter set by the hub's list (1.1)" : "";
+  $("boardWhat").textContent = `${what}${fw}${letterNote}`;
+  $("boardMac").textContent = info.mac ? `MAC ${info.mac}` : "";
+
+  const role = selectedRole();
+  const pipe = parseInt($("boardPipe").value, 10);
+  $("boardPipe").disabled = role !== "pipe";
+  const p = plan(info, role, pipe, board.latest);
+  const install = $("boardInstall");
+  const same = info.kind === role && info.fw === board.latest;
+  install.textContent = `${same ? "Reinstall" : info.kind === role ? "Update to" : "Install"} ${role} firmware ${board.latest || ""}`.trim();
+  install.className = p.install ? "accent" : "";
+  const setBtn = $("boardSetPipe");
+  setBtn.hidden = role !== "pipe" || p.install;
+  setBtn.textContent = `Make it pipe ${LETTERS[pipe]}`;
+  $("boardTest").hidden = !p.canTest || role !== "pipe";
+
+  // Another board already answers to that letter?
+  const heard = state.boards[pipe];
+  const clash = role === "pipe" && heard && heard.fw !== "old" && info.mac && !sameMac(heard.mac, info.mac);
+  $("boardWarn").hidden = !clash;
+  if (clash) $("boardWarn").textContent = `The hub already hears another board as pipe ${LETTERS[pipe]} (${heard.mac}). `
+    + "Two boards with one letter: only one of them plays. Give the other board a new letter too.";
+  install.disabled = board.busy;
+  $("boardTest").disabled = board.busy;
+  $("boardNext").disabled = board.busy;
+  setBtn.disabled = board.busy || !p.setLetter;
+}
+
+async function boardTask(label, fn) {
+  if (board.busy) return;
+  board.busy = true;
+  renderBoardCard();
+  boardStatus(label);
+  try {
+    await fn();
+  } catch (e) {
+    const msg = e?.message || String(e);
+    boardLog(`error: ${msg}`);
+    boardStatus(/open|busy|InvalidState/i.test(msg)
+      ? "The USB port is busy: close other apps using the board (Arduino Serial Monitor) and try again."
+      : /Failed to connect|timed? ?out|sync/i.test(msg)
+        ? "The board didn't respond. Hold its BOOT button, click again, and let go once it starts."
+        : `Didn't work: ${msg}`, "err");
+  } finally {
+    board.busy = false;
+    $("boardProgress").hidden = true;
+    renderBoardCard();
+  }
+}
+
+async function readBoard() {
+  boardLog("— asking the board what it is…");
+  const info = await inspect(board.port);
+  info.lines.forEach((l) => boardLog(`<< ${l}`));
+  board.info = info;
+  document.querySelector(`input[name=boardRole][value=${info.kind === "hub" ? "hub" : "pipe"}]`).checked = true;
+  $("boardPipe").value = String(info.kind === "pipe" && info.letters && info.pipe !== null
+    ? info.pipe : suggestLetter(state.boards, info.mac));
+  return info;
+}
+
+async function openBoardsDialog() {
+  moreMenu.open = false;
   if (!("serial" in navigator)) {
-    $("firmwareButtons").innerHTML =
-      "<p class='dialog-error'>Updating boards needs Chrome or Edge on a computer.</p>";
-    dlg.showModal();
+    toast("Setting up boards needs Chrome or Edge on a computer", "err");
     return;
   }
+  const sel = $("boardPipe");
+  if (!sel.options.length) for (let i = 0; i < MAX_PIPES; i++) sel.add(new Option(LETTERS[i], String(i)));
+  try { board.latest = await latestVersion(); } catch (_) { board.latest = null; }
+  if (state.connected && !state.demo) backend.link?.listPipes?.().catch(() => {});
+  renderHubHears();
+  renderBoardCard();
+  $("boardsDialog").showModal();
+}
+
+$("boardConnect").addEventListener("click", () => boardTask("Looking at the board…", async () => {
+  let port;
+  try {
+    port = await navigator.serial.requestPort();
+  } catch (e) {
+    if (e?.name === "NotFoundError") { boardStatus(""); return; }   // closed the chooser
+    throw e;
+  }
+  // The same port as the organ's hub? Only one thing can use it at a time.
   if (state.connected && !state.demo) {
     const go = await askConfirm({
-      title: "Disconnect to update?",
-      body: "The board's USB port can only be used by one thing at a time, so the app disconnects first."
-        + (state.playing ? " The organ will stop." : ""),
+      title: "Disconnect the hub?",
+      body: "The board you picked may be the hub that's playing. The app disconnects it while you work here"
+        + (state.playing ? ", and the organ stops." : "."),
       ok: "Disconnect",
     });
-    if (!go) return;
-    try {
-      if (state.playing) await backend.stop();
-      await backend.disconnect();
-    } catch (e) { toast("Disconnect failed: " + e.message, "err"); return; }
+    if (!go) { boardStatus(""); return; }
+    if (state.playing) await backend.stop();
+    await backend.disconnect();
   }
-  dlg.showModal();
-  if ($("firmwareButtons").dataset.ready) return;
-  try {
-    await import(ESP_WEB_TOOLS);
-  } catch (_) {
-    $("firmwareButtons").innerHTML =
-      "<p class='dialog-error'>Couldn't load the updater (are you online?).</p>";
-    return;
-  }
-  const boards = [
-    ["sender", "Update sender", "The board plugged into this computer that talks to the app."],
-    ["receiver", "Update a pipe", "Any pipe board (A–H). Plug it in by USB, update, repeat for each pipe."],
-  ];
-  $("firmwareButtons").innerHTML = "";
-  for (const [dir, label, help] of boards) {
-    const row = document.createElement("div");
-    row.className = "fw-row";
-    const btn = document.createElement("esp-web-install-button");
-    btn.setAttribute("manifest", `firmware/${dir}/manifest.json`);
-    btn.innerHTML = `<button slot="activate" class="accent">${label}</button>`;
-    const p = document.createElement("p");
-    p.textContent = help;
-    row.append(btn, p);
-    $("firmwareButtons").appendChild(row);
-  }
-  $("firmwareButtons").dataset.ready = "1";
-}
+  board.port = port;
+  const info = await readBoard();
+  boardStatus(info.kind ? "Choose what this board should be, then install or set its letter."
+    : "No organ firmware answered: choose hub or pipe and install.");
+}));
+
+$("boardInstall").addEventListener("click", () => {
+  const role = selectedRole();
+  const pipe = parseInt($("boardPipe").value, 10);
+  boardTask(`Installing the ${role} firmware: keep the board plugged in…`, async () => {
+    $("boardProgress").hidden = false;
+    $("boardBar").style.width = "0";
+    boardLog(`— installing ${role} firmware`);
+    const version = await install(board.port, role, {
+      onProgress: (f) => { $("boardBar").style.width = `${Math.round(f * 100)}%`; },
+      onLog: (t) => boardLog(t),
+    });
+    await sleepMs(1500);                      // let it boot
+    let info = await readBoard();
+    if (role === "pipe") {
+      await setPipeLetter(board.port, pipe);
+      boardLog(`>> PIPE ${LETTERS[pipe]}`);
+      info = await readBoard();
+    }
+    const done = role === "hub" ? `Done: this is the hub, firmware ${version}.`
+      : `Done: this is pipe ${LETTERS[pipe]}, firmware ${version}. Click the valve to check it, then plug in the next board.`;
+    boardStatus(info.kind === role ? done : "Installed, but the board didn't answer afterwards: unplug it, plug it back in and click Next board.",
+      info.kind === role ? "ok" : "err");
+  });
+});
+
+$("boardSetPipe").addEventListener("click", () => {
+  const pipe = parseInt($("boardPipe").value, 10);
+  boardTask(`Making it pipe ${LETTERS[pipe]}…`, async () => {
+    boardLog(`>> PIPE ${LETTERS[pipe]}`);
+    boardLog(`<< ${await setPipeLetter(board.port, pipe)}`);
+    await readBoard();
+    boardStatus(`Done: this is pipe ${LETTERS[pipe]}. The hub finds it within a few seconds.`, "ok");
+  });
+});
+
+$("boardTest").addEventListener("click", () => boardTask("Opening the valve for a moment…", async () => {
+  boardLog(`<< ${await testValve(board.port)}`);
+  boardStatus("Did you hear (or see) the valve click? If not, check the relay's wiring and power.", "ok");
+}));
+
+$("boardNext").addEventListener("click", () => {
+  board.port = null;
+  board.info = null;
+  boardStatus("");
+  renderBoardCard();
+  $("boardConnect").click();
+});
+
+for (const r of document.querySelectorAll("input[name=boardRole]")) r.addEventListener("change", renderBoardCard);
+$("boardPipe").addEventListener("change", renderBoardCard);
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- backend events
 // The local app's snapshot (first connection, or the event stream
@@ -1030,6 +1189,7 @@ function onStatus(ev) {
   connectBtn.textContent = state.connected ? "Disconnect" : "Connect";
   connectBtn.classList.toggle("connected", state.connected);
   showConnectedPort();
+  if (state.connected !== was) state.boards = [];    // the hub reports its pipes again
   if (state.connected && !was) {
     stopPreview();
     state.peers = freshPeers();
@@ -1074,11 +1234,20 @@ function onBackendEvent(ev) {
         break;
       case "ready":
         // Sender rebooted: it lost the pattern and stopped.
-        if (state.sentSeq !== null) toast("Sender restarted: resending the pattern", "warn");
+        if (state.sentSeq !== null) toast("Hub restarted: resending the pattern", "warn");
         state.sentSeq = null;
         state.peers = freshPeers();
         setPlayhead(-1);
         if (!state.shared) schedulePatternSend();   // shared: the server resends
+        break;
+      case "pipe":
+        state.boards[ev.peer] = { mac: ev.mac, fw: ev.fw || "?" };
+        renderPeers();
+        if ($("boardsDialog").open) { renderHubHears(); renderBoardCard(); }
+        break;
+      case "dup":
+        toast(`Two boards are set to pipe ${pipeName(ev.peer)} (the other one is ${ev.mac}): give one of them `
+          + "another letter in More ▾ → Boards", "warn");
         break;
       case "cells": applyCells(ev); break;
       case "pattern": applyPattern(ev); break;
@@ -2015,7 +2184,7 @@ $("importFile").addEventListener("change", (e) => {
   e.target.value = "";
   if (f) importPresets(f);
 });
-$("updateFirmware").addEventListener("click", () => { moreMenu.open = false; openFirmwareDialog(); });
+$("updateFirmware").addEventListener("click", openBoardsDialog);
 const openAbout = () => { moreMenu.open = false; $("aboutDialog").showModal(); };
 $("openAbout").addEventListener("click", openAbout);
 $("openAboutFooter").addEventListener("click", openAbout);

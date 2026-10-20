@@ -2,12 +2,16 @@
 
 ## Check on the real organ
 
-v1.1 has only been tested against the simulator and demo organ.
+v1.1 and v1.2 have only been tested against the simulator and demo organ.
 
 - [ ] Web Serial with the real sender in Chrome: connect, play, stop,
       unplug mid-play (the page should say disconnected; pipes close after 2 s).
-- [ ] Web firmware update for sender and receivers (check that the BOOT
-      button is needed or not on Calum's boards).
+- [ ] Boards panel (1.2) on real boards: install the hub and each pipe,
+      set letters, Click the valve; is BOOT needed on Calum's boards? The
+      USB part was only tested with a simulated board.
+- [ ] 1.2 radio: the hub finds every pipe (✓ in Boards) within a few
+      seconds of power-up; a pipe added mid-play gets its row; two boards
+      on one letter show the warning. Compile 1.2 on ESP32 core 3.x too.
 - [ ] Lost-beat recovery: play with a pipe at the edge of radio range.
 - [ ] Opening the port resets some ESP32 boards: confirm the app resends
       the pattern after the sender's `OK READY`.

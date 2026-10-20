@@ -1,14 +1,20 @@
-// Calum Organ v1.1 — ESP32 Sender (master clock)
+// Calum Organ v1.2 — ESP32 hub (sender, master clock)
 //
 // Parses a line-based protocol from USB serial, unicasts each grid row to
-// its ESP-NOW receiver (with retry), and while playing broadcasts one TICK
+// its pipe over ESP-NOW (with retry), and while playing broadcasts one TICK
 // per step so every pipe steps on the same beat.
+//
+// Pipes announce themselves (PKT_HELLO with their letter), so the hub learns
+// which board is which pipe; PEER_MACS (peers.h) only covers 1.1 pipes.
 //
 // Protocol (see ../../app/protocol.py for the canonical spec):
 //   host -> sender:  PAT <tempo> <rows> <cols> <row0bits> ... <rowNbits>\n
-//                    PLAY\n  STOP\n  PING\n
+//                    PLAY\n  STOP\n  PING\n  PIPES\n
 //   sender -> host:  OK PAT <seq>  ACK <peer> <seq>  NAK <peer> <seq>
 //                    OK PLAY  OK STOP  PONG  STEP <n>  ERR <reason>
+//                    PIPE <peer> <mac> <fw|old>   (found a pipe; "old" = from PEER_MACS)
+//                    DUP <peer> <mac>             (a second board claims that letter)
+//                    OK PIPES                     (after listing every PIPE)
 //
 // PAT is accepted immediately (OK PAT) and delivered in the background;
 // ACK/NAK lines follow per peer. A new tempo applies on the next step. A new
@@ -40,6 +46,21 @@ static uint8_t  retry_mask    = 0;   // failed, should be resent
 static volatile uint32_t ack_lines = 0;   // callback -> loop: lines to print
 static char     cb_lines[NUM_PEERS * 2][24];
 
+// ---- which board is which pipe ----------------------------------------------
+// pipe_mac[] is read by the send callback (Wi-Fi task): change it under g_mux.
+static uint8_t  pipe_mac[NUM_PEERS][6];
+static uint8_t  known_mask   = 0;    // pipe_mac[i] is valid
+static uint8_t  learned_mask = 0;    // ... and came from the pipe's own HELLO
+static uint16_t pipe_fw[NUM_PEERS];
+static uint32_t heard_ms[NUM_PEERS];
+static uint32_t dup_ms[NUM_PEERS];
+static bool     have_pattern = false;
+
+// HELLOs from the callback, handled in loop().
+#define HELLO_QUEUE 16
+static struct { uint8_t mac[6]; uint8_t pipe; uint16_t fw; } hello_q[HELLO_QUEUE];
+static uint8_t hello_n = 0;
+
 // ---- clock -----------------------------------------------------------------
 static bool     running      = false;
 static uint16_t tempo        = 120;
@@ -51,20 +72,28 @@ static uint32_t next_tick_ms = 0;
 
 static uint32_t step_ms() { return 60000UL / (tempo ? tempo : 120); }
 
-static int peer_index(const uint8_t *mac) {
+// Call with g_mux held.
+static int peer_index_locked(const uint8_t *mac) {
   for (int i = 0; i < NUM_PEERS; i++) {
-    if (memcmp(mac, PEER_MACS[i], 6) == 0) return i;
+    if ((known_mask & (1 << i)) && memcmp(mac, pipe_mac[i], 6) == 0) return i;
   }
   return -1;
 }
 
+static void report_send(int idx, bool ok);
+
 static void handle_send_status(const uint8_t *mac, esp_now_send_status_t status) {
-  int idx = peer_index(mac);
+  portENTER_CRITICAL(&g_mux);
+  int idx = peer_index_locked(mac);
+  portEXIT_CRITICAL(&g_mux);
   if (idx < 0) return;   // broadcast ticks/stops: no ACK in ESP-NOW
+  report_send(idx, status == ESP_NOW_SEND_SUCCESS);
+}
+
+static void report_send(int idx, bool ok) {
   portENTER_CRITICAL(&g_mux);
   inflight_mask &= ~(1 << idx);
-  bool ok = (status == ESP_NOW_SEND_SUCCESS);
-  if (!ok && attempts[idx] < MAX_ATTEMPTS) {
+  if (!ok && attempts[idx] < MAX_ATTEMPTS && (known_mask & (1 << idx))) {
     retry_mask |= (1 << idx);
   } else if (ack_lines < NUM_PEERS * 2) {
     // Final outcome: report it from loop() (Serial is not ISR/callback safe).
@@ -96,6 +125,122 @@ static void add_peer(const uint8_t *mac) {
   }
 }
 
+static void on_packet(const uint8_t *mac, const uint8_t *data, int len) {
+  if (len != (int)sizeof(PipePacket)) return;
+  const PipePacket *p = (const PipePacket *)data;
+  if (p->magic != PIPE_MAGIC || p->type != PKT_HELLO) return;
+  portENTER_CRITICAL(&g_mux);
+  if (hello_n < HELLO_QUEUE) {
+    memcpy(hello_q[hello_n].mac, mac, 6);
+    hello_q[hello_n].pipe = p->peer;
+    hello_q[hello_n].fw   = p->seq;
+    hello_n++;
+  }
+  portEXIT_CRITICAL(&g_mux);
+}
+
+// The receive-callback signature changed in ESP-IDF 5 (Arduino-ESP32 3.x).
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+static void on_data_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  on_packet(info->src_addr, data, len);
+}
+#else
+static void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
+  on_packet(mac, data, len);
+}
+#endif
+
+static void print_pipe(int i) {
+  const uint8_t *m = pipe_mac[i];
+  char fw[8];
+  if (learned_mask & (1 << i)) snprintf(fw, sizeof(fw), "%u.%u", pipe_fw[i] >> 8, pipe_fw[i] & 0xFF);
+  else strcpy(fw, "old");
+  Serial.printf("PIPE %d %02X:%02X:%02X:%02X:%02X:%02X %s\n", i, m[0], m[1], m[2], m[3], m[4], m[5], fw);
+}
+
+static bool mac_in_use(const uint8_t *mac) {
+  for (int i = 0; i < NUM_PEERS; i++) {
+    if ((known_mask & (1 << i)) && memcmp(mac, pipe_mac[i], 6) == 0) return true;
+  }
+  return false;
+}
+
+static void send_to_peer(int idx);
+
+// A pipe said hello: remember which board it is.
+static void learn(const uint8_t *mac, uint8_t pipe, uint16_t fw) {
+  uint32_t now = millis();
+  // A board that moved to another letter (or was cleared) gives up its old one.
+  for (int j = 0; j < NUM_PEERS; j++) {
+    if (j != pipe && (known_mask & (1 << j)) && memcmp(pipe_mac[j], mac, 6) == 0) {
+      portENTER_CRITICAL(&g_mux);
+      known_mask &= ~(1 << j);
+      learned_mask &= ~(1 << j);
+      portEXIT_CRITICAL(&g_mux);
+    }
+  }
+  if (pipe >= NUM_PEERS) {              // letter not set: nothing to learn
+    if (!mac_in_use(mac)) esp_now_del_peer(mac);
+    return;
+  }
+  bool same = (known_mask & (1 << pipe)) && memcmp(pipe_mac[pipe], mac, 6) == 0;
+  if (!same && (learned_mask & (1 << pipe)) && now - heard_ms[pipe] < 3 * HELLO_MS) {
+    // Two boards set to the same letter: keep the first, warn now and then.
+    if (now - dup_ms[pipe] > 10000 || dup_ms[pipe] == 0) {
+      dup_ms[pipe] = now ? now : 1;
+      Serial.printf("DUP %d %02X:%02X:%02X:%02X:%02X:%02X\n", pipe, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+    return;
+  }
+  heard_ms[pipe] = now;
+  bool news = !same || !(learned_mask & (1 << pipe)) || pipe_fw[pipe] != fw;
+  if (!same) {
+    uint8_t old[6];
+    memcpy(old, pipe_mac[pipe], 6);
+    bool had = known_mask & (1 << pipe);
+    add_peer(mac);
+    portENTER_CRITICAL(&g_mux);
+    memcpy(pipe_mac[pipe], mac, 6);
+    known_mask |= (1 << pipe);
+    portEXIT_CRITICAL(&g_mux);
+    if (had && !mac_in_use(old)) esp_now_del_peer(old);
+  }
+  portENTER_CRITICAL(&g_mux);
+  learned_mask |= (1 << pipe);
+  portEXIT_CRITICAL(&g_mux);
+  pipe_fw[pipe] = fw;
+  if (news) print_pipe(pipe);
+  // A pipe that just turned up gets its row of the current pattern.
+  if (!same && have_pattern && pipe < active_rows) {
+    portENTER_CRITICAL(&g_mux);
+    attempts[pipe] = 0;
+    portEXIT_CRITICAL(&g_mux);
+    send_to_peer(pipe);
+  }
+}
+
+static void service_hellos() {
+  for (;;) {
+    uint8_t mac[6], pipe;
+    uint16_t fw;
+    portENTER_CRITICAL(&g_mux);
+    if (hello_n == 0) { portEXIT_CRITICAL(&g_mux); return; }
+    hello_n--;
+    memcpy(mac, hello_q[hello_n].mac, 6);
+    pipe = hello_q[hello_n].pipe;
+    fw   = hello_q[hello_n].fw;
+    portEXIT_CRITICAL(&g_mux);
+    learn(mac, pipe, fw);
+  }
+}
+
+static void ask_who() {
+  PipePacket who = {};
+  who.magic = PIPE_MAGIC;
+  who.type  = PKT_WHO;
+  esp_now_send(BROADCAST_MAC, (const uint8_t *)&who, sizeof(PipePacket));
+}
+
 void setup() {
   Serial.begin(SERIAL_BAUD);
   delay(50);
@@ -105,24 +250,40 @@ void setup() {
     return;
   }
   esp_now_register_send_cb(on_send_status);
-  for (int i = 0; i < NUM_PEERS; i++) add_peer(PEER_MACS[i]);
+  esp_now_register_recv_cb(on_data_recv);
+  // Start from the 1.1 address table; pipes' HELLOs replace it.
+  for (int i = 0; i < NUM_PEERS; i++) {
+    memcpy(pipe_mac[i], PEER_MACS[i], 6);
+    add_peer(PEER_MACS[i]);
+  }
+  known_mask = (1 << NUM_PEERS) - 1;
   add_peer(BROADCAST_MAC);
   Serial.printf("FW calum_sender %s mac %s\n", FW_VERSION, WiFi.macAddress().c_str());
   Serial.println("OK READY");
+  ask_who();
 }
 
 // ---------------------------------------------------------------------------
 // delivery
 // ---------------------------------------------------------------------------
 static void send_to_peer(int idx) {
+  uint8_t mac[6];
+  bool known;
   portENTER_CRITICAL(&g_mux);
   attempts[idx]++;
   inflight_mask |= (1 << idx);
   retry_mask &= ~(1 << idx);
+  known = known_mask & (1 << idx);
+  memcpy(mac, pipe_mac[idx], 6);
   portEXIT_CRITICAL(&g_mux);
-  if (esp_now_send(PEER_MACS[idx], (const uint8_t *)&peer_pkt[idx], sizeof(PipePacket)) != ESP_OK) {
+  if (!known) {
+    // No board has said it's this pipe (yet): it gets its row when it does.
+    report_send(idx, false);              // known_mask is clear: no retry
+    return;
+  }
+  if (esp_now_send(mac, (const uint8_t *)&peer_pkt[idx], sizeof(PipePacket)) != ESP_OK) {
     // Queue full or similar: no callback will come, so retry from loop().
-    handle_send_status(PEER_MACS[idx], ESP_NOW_SEND_FAIL);
+    report_send(idx, false);
   }
 }
 
@@ -210,6 +371,7 @@ void loop() {
   }
   service_clock();
   service_delivery();
+  service_hellos();
 }
 
 // Simple space-tokenizer that mutates the buffer.
@@ -252,6 +414,7 @@ static void handle_pat(int argc, char **argv) {
   next_steps  = (uint16_t)cols;
   active_rows = (uint8_t)rows;
   if (!running) cur_steps = next_steps;
+  have_pattern = true;
 
   for (int row = 0; row < rows; row++) {
     pkts[row].magic = PIPE_MAGIC;
@@ -287,5 +450,13 @@ static void handle_line(char *line) {
   else if (strcmp(argv[0], "PLAY") == 0) handle_play();
   else if (strcmp(argv[0], "STOP") == 0) { stop_all(); Serial.println("OK STOP"); }
   else if (strcmp(argv[0], "PING") == 0) Serial.println("PONG");
+  else if (strcmp(argv[0], "PIPES") == 0) {
+    for (int i = 0; i < NUM_PEERS; i++) if (known_mask & (1 << i)) print_pipe(i);
+    Serial.println("OK PIPES");
+    ask_who();                           // and listen again
+  }
+  else if (strcmp(argv[0], "INFO") == 0) {
+    Serial.printf("INFO hub fw %s mac %s\n", FW_VERSION, WiFi.macAddress().c_str());
+  }
   else                                   Serial.println("ERR unknown");
 }

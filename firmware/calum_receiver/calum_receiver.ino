@@ -1,4 +1,4 @@
-// Calum Organ v1.1 — ESP32 Receiver
+// Calum Organ v1.2 — ESP32 pipe board (receiver)
 //
 // Stores its row of the pattern and plays whichever step the sender's
 // broadcast TICK says, so all pipes stay locked to one clock. Broadcasts are
@@ -9,10 +9,18 @@
 //
 // A new pattern with the same step count is used from the next tick; one
 // with a different step count waits for step 0.
+//
+// Which pipe it is (A–H) is stored in flash, so it survives firmware updates
+// and power cuts. The board announces itself (PKT_HELLO) so the hub finds it.
+// USB serial commands (the app's Boards panel uses them):
+//   INFO      -> INFO pipe <A..H|-> fw <version> mac <mac>
+//   PIPE <L>  -> OK PIPE <L>     set the letter (PIPE - clears it)
+//   TEST      -> OK TEST         opens the valve for 300 ms
 
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_idf_version.h>
+#include <Preferences.h>
 #include <string.h>
 #include "peers.h"
 
@@ -30,6 +38,14 @@ static bool back_ready = false;
 static PipePacket tick = {};          // latest tick, not yet played
 static bool tick_ready = false;
 static bool stop_req   = false;
+
+static bool     who_req   = false;   // the hub asked who's there
+
+// ---- identity -------------------------------------------------------------
+static Preferences prefs;
+static uint8_t  my_pipe       = NO_PIPE;
+static uint32_t next_hello_ms = 0;
+static uint32_t test_until_ms = 0;   // valve test running until then (0: none)
 
 // ---- loop-only state ------------------------------------------------------
 static PipePacket front = {};         // pattern in use (steps == 0: none)
@@ -49,7 +65,12 @@ static void on_packet(const uint8_t *data, int len) {
   if (p->magic != PIPE_MAGIC) return;
   portENTER_CRITICAL(&g_mux);
   switch (p->type) {
-    case PKT_PATTERN: back = *p; back_ready = true; break;
+    case PKT_PATTERN:
+      // A pipe with a letter only takes its own row (a hub with an old
+      // address table could send it another pipe's row).
+      if (my_pipe == NO_PIPE || p->peer == my_pipe) { back = *p; back_ready = true; }
+      break;
+    case PKT_WHO:     who_req = true; break;
     case PKT_TICK:    tick = *p; tick_ready = true; break;
     case PKT_STOP:    stop_req = true; break;
   }
@@ -69,10 +90,31 @@ static void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
 
 static void close_valve() { digitalWrite(RELAY_PIN, RELAY_IDLE); }
 
+static char pipe_char() { return my_pipe == NO_PIPE ? '-' : (char)('A' + my_pipe); }
+
+static void send_hello() {
+  PipePacket h = {};
+  h.magic = PIPE_MAGIC;
+  h.type  = PKT_HELLO;
+  h.seq   = FW_CODE;
+  h.peer  = my_pipe;
+  esp_now_send(BROADCAST_MAC, (const uint8_t *)&h, sizeof(PipePacket));
+  // A little jitter so pipes powered on together don't keep colliding.
+  next_hello_ms = millis() + HELLO_MS + (esp_random() % 500);
+}
+
+static void print_info() {
+  Serial.printf("INFO pipe %c fw %s mac %s\n", pipe_char(), FW_VERSION, WiFi.macAddress().c_str());
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(RELAY_PIN, OUTPUT);
   close_valve();
+
+  prefs.begin("calum", false);
+  uint8_t stored = prefs.getUChar("pipe", NO_PIPE);
+  my_pipe = stored < NUM_PEERS ? stored : NO_PIPE;
 
   WiFi.mode(WIFI_STA);
   if (esp_now_init() != ESP_OK) {
@@ -80,8 +122,78 @@ void setup() {
     return;
   }
   esp_now_register_recv_cb(on_data_recv);
-  // The MAC is what goes in peers.h for this pipe.
-  Serial.printf("READY FW calum_receiver %s mac %s\n", FW_VERSION, WiFi.macAddress().c_str());
+  esp_now_peer_info_t bcast = {};
+  memcpy(bcast.peer_addr, BROADCAST_MAC, 6);
+  esp_now_add_peer(&bcast);           // needed to send PKT_HELLO
+  Serial.printf("READY FW calum_receiver %s pipe %c mac %s\n",
+                FW_VERSION, pipe_char(), WiFi.macAddress().c_str());
+  send_hello();
+}
+
+// ---- USB commands -----------------------------------------------------------
+static char   cmd_buf[32];
+static size_t cmd_len = 0;
+
+static void handle_command(char *line) {
+  while (*line == ' ') line++;
+  if (strcmp(line, "INFO") == 0) {
+    print_info();
+  } else if (strncmp(line, "PIPE ", 5) == 0) {
+    char c = line[5];
+    if (c >= 'a' && c <= 'h') c -= 32;
+    if ((c >= 'A' && c <= 'H') || c == '-') {
+      my_pipe = c == '-' ? NO_PIPE : (uint8_t)(c - 'A');
+      prefs.putUChar("pipe", my_pipe);
+      // A new letter means a new row: forget the old one until the hub sends it.
+      portENTER_CRITICAL(&g_mux);
+      back_ready = false;
+      portEXIT_CRITICAL(&g_mux);
+      front.steps = 0;
+      Serial.printf("OK PIPE %c\n", pipe_char());
+      send_hello();                      // tell the hub straight away
+    } else {
+      Serial.println("ERR pipe letter");
+    }
+  } else if (strcmp(line, "TEST") == 0) {
+    digitalWrite(RELAY_PIN, RELAY_ACTIVE);
+    test_until_ms = millis() + 300;
+    if (!test_until_ms) test_until_ms = 1;
+    Serial.println("OK TEST");
+  } else if (*line) {
+    Serial.println("ERR unknown");
+  }
+}
+
+static void read_commands() {
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      cmd_buf[cmd_len] = 0;
+      handle_command(cmd_buf);
+      cmd_len = 0;
+    } else if (cmd_len < sizeof(cmd_buf) - 1) {
+      cmd_buf[cmd_len++] = c;
+    } else {
+      cmd_len = 0;                       // too long: not one of ours
+    }
+  }
+}
+
+static void service_identity() {
+  uint32_t now = millis();
+  bool asked;
+  portENTER_CRITICAL(&g_mux);
+  asked = who_req;
+  who_req = false;
+  portEXIT_CRITICAL(&g_mux);
+  // Answer the hub's "who's there" after a random moment (all pipes hear it).
+  if (asked) next_hello_ms = now + (esp_random() % 300);
+  if ((int32_t)(now - next_hello_ms) >= 0) send_hello();
+  if (test_until_ms && (int32_t)(now - test_until_ms) >= 0) {
+    test_until_ms = 0;
+    if (!running) close_valve();
+  }
 }
 
 static void play_step(const PipePacket &t) {
@@ -109,6 +221,9 @@ static void play_step(const PipePacket &t) {
 }
 
 void loop() {
+  read_commands();
+  service_identity();
+
   bool do_stop, have_tick;
   PipePacket t;
   portENTER_CRITICAL(&g_mux);

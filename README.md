@@ -1,4 +1,4 @@
-# Calum Organ — Pipe Madness v1.1
+# Calum Organ — Pipe Madness v1.2
 
 A step sequencer that drives a pipe organ built from solenoid valves. You
 draw a rhythm grid in the browser: each row is a pipe (A–H), each column a
@@ -232,15 +232,43 @@ from <https://github.com/sgossner/VSCO-2-CE> into a folder, then:
 python3 tools/build_corpus.py <that folder>
 ```
 
-## Updating board firmware
+## Boards: the hub and the pipes
 
-Online, **More ▾ → Update board firmware…** installs the current firmware
-on a board plugged in by USB: no Arduino IDE needed. Do the sender and then
-each pipe, one at a time. (Uses Espressif's
-[ESP Web Tools](https://esphome.github.io/esp-web-tools/).)
+The organ has two kinds of ESP32 board:
 
-The binaries it installs live in `app/static/firmware/`. After changing
-anything in `firmware/`, rebuild them with:
+- the **hub**: plugged into the computer by USB while playing; it sends
+  each pipe its row and keeps the beat (the firmware calls it the sender);
+- the **pipes**, A–H: one board per pipe, driving its valve (the
+  receivers).
+
+Since 1.2 each pipe **stores its letter on the board** and announces itself
+over the radio; the hub finds the pipes by itself. Swapping or adding a
+pipe board needs no code change: give it a letter and it plays.
+
+Online, **More ▾ → Boards: hub & pipes…** sets them up one at a time:
+
+1. Plug a board in by USB and click **Connect a board…**. The panel
+   restarts it and reads what it is: hub or pipe, firmware version, letter.
+2. Choose **the hub** or **a pipe** and its letter, then
+   **Install … firmware** (or **Make it pipe B** if the firmware is already
+   current). Installing a pipe also sets its letter.
+3. **Click the valve** opens the pipe's valve for a moment, to check the
+   wiring. **Next board…** for the next one.
+
+While the hub is connected, the panel also shows which pipes it hears
+(✓ = a 1.2 board with that letter, 1.1 = an old board it still knows from
+its built-in list). If two boards are set to the same letter, the app
+warns. If a board won't connect or install, hold its **BOOT** button while
+clicking, then let go.
+
+Updating from 1.1: update the hub first; it still plays 1.1 pipes from
+its built-in address list. Then update each pipe and give it its letter.
+The letter survives later updates and power cuts.
+
+Installing uses [esptool-js](https://github.com/espressif/esptool-js)
+0.5.7 (Espressif), loaded only when you install. The files it installs live
+in `app/static/firmware/`. After changing anything in `firmware/`, rebuild
+them with:
 
 ```bash
 ./tools/build_firmware.sh
@@ -275,12 +303,13 @@ Every push to `main` runs the tests on GitHub and then publishes
 
 ## Firmware
 
-See [docs/HARDWARE.md](docs/HARDWARE.md) for board MACs, wiring and the
-Arduino setup. Flash `firmware/calum_sender` to the USB board and
-`firmware/calum_receiver` to every pipe board. **v1.1 changed the radio
-packet: update the sender and all receivers together.**
+See [docs/HARDWARE.md](docs/HARDWARE.md) for wiring and the Arduino setup.
+`firmware/calum_sender` is the hub, `firmware/calum_receiver` every pipe
+board (the Boards panel installs them without the Arduino IDE).
 
-Both sketches compile on ESP32 Arduino core 2.0.14 and 3.3.12.
+1.2 compiles on ESP32 Arduino core 2.0.14 (what the published files are
+built with); the ESP-IDF 5 code paths for core 3.x are there but 1.2 hasn't
+been compiled on 3.x yet.
 `peers.h` exists in both sketch folders (Arduino needs it there). Keep the
 two copies identical; a test checks this.
 
@@ -289,11 +318,19 @@ two copies identical; a test checks this.
 Line-based ASCII over USB serial, 115200 baud:
 
 ```
-host → sender:  PAT <tempo> <rows> <cols> <row0bits> ... <rowNbits>
-                PLAY   STOP   PING
-sender → host:  OK PAT <seq>   ACK <peer> <seq>   NAK <peer> <seq>
-                OK PLAY   OK STOP   OK READY   PONG   STEP <n>   ERR <reason>
+host → hub:  PAT <tempo> <rows> <cols> <row0bits> ... <rowNbits>
+             PLAY   STOP   PING   PIPES   INFO
+hub → host:  OK PAT <seq>   ACK <peer> <seq>   NAK <peer> <seq>
+             OK PLAY   OK STOP   OK READY   PONG   STEP <n>   ERR <reason>
+             PIPE <peer> <mac> <fw|old>   DUP <peer> <mac>   OK PIPES
+
+host → pipe: INFO   PIPE <A..H|->   TEST
+pipe → host: INFO pipe <letter> fw <version> mac <mac>   OK PIPE <letter>   OK TEST
 ```
+
+`PIPE` lines come when the hub finds a pipe (and in answer to `PIPES`);
+`old` means a 1.1 pipe from its built-in list. `DUP` means a second board
+claims a letter. A NAK for a pipe no board has claimed comes at once.
 
 `tempo` is in steps per minute (one step = 60000/tempo ms). `OK PAT` means
 the sender accepted the pattern; ACK/NAK per pipe follow as delivery
@@ -301,9 +338,11 @@ finishes. `STEP <n>` is sent once per step while playing. Implemented twice,
 kept in step by tests: `app/protocol.py` (local app) and
 `app/static/js/protocol.js` (browser).
 
-Over the radio (`firmware/*/peers.h`), the sender unicasts one `PKT_PATTERN`
+Over the radio (`firmware/*/peers.h`), the hub unicasts one `PKT_PATTERN`
 per pipe (with retry), broadcasts `PKT_TICK {step, tempo, rows}` every step,
-and broadcasts `PKT_STOP` to stop.
+and broadcasts `PKT_STOP` to stop. Pipes broadcast `PKT_HELLO {letter,
+firmware}` every 3 s (and soon after the hub's `PKT_WHO` at its boot); a
+pipe with a letter only accepts its own row.
 
 ## Project layout
 
@@ -326,6 +365,7 @@ calum-organ/
 │       ├── js/app.js       # UI
 │       ├── js/backends.js  # local app vs online (Web Serial / demo)
 │       ├── js/room.js      # online rooms: host hub, guest backend, roles
+│       ├── js/boards.js    # Boards panel: identify, install, set pipe letter
 │       ├── js/link.js      # serial link + Web Serial transport
 │       ├── js/protocol.js  # same protocol as app/protocol.py
 │       ├── js/demo.js      # simulated organ
@@ -372,6 +412,10 @@ calum-organ/
   sound fix (audio unlocked in the tap, silent switch bypassed). Online
   rooms (PeerJS): play together over the internet, with roles (paint
   everything, own one pipe, co-host) and handing over the host.
+- v1.2 (Oct 2026): pipes store their letter on the board and announce
+  themselves; the hub finds them (no MAC table to edit). Boards panel:
+  identify a board over USB, install hub or pipe firmware, set a pipe's
+  letter, click its valve.
 
 ## Credits and licences
 
@@ -385,8 +429,9 @@ with Claude AI as a co-designing agent, and the projects below.
   why it's pinned.
 - `app/static/corpus/`: organ recorded by Simon Dalzell (Ivy Audio) for
   Versilian Studios Chamber Orchestra 2: Community Edition, CC0.
-- Firmware: Arduino-ESP32 core (LGPL-2.1), ESP-IDF (Apache-2.0). Web
-  updater: ESP Web Tools (Apache-2.0).
+- Firmware: Arduino-ESP32 core (LGPL-2.1), ESP-IDF (Apache-2.0). Boards
+  panel installer: esptool-js 0.5.7 (Espressif, Apache-2.0), loaded from
+  unpkg when installing.
 - `app/static/vendor/qrcode-generator/`: QR codes for sharing, by Kazuhiko
   Arase (MIT).
 - `app/static/vendor/peerjs/`: PeerJS 1.5.5 (MIT), and its free public

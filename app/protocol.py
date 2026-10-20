@@ -124,7 +124,7 @@ def decode_pattern(line: bytes | str) -> Pattern:
 
 @dataclass
 class Ack:
-    kind: str           # 'OK', 'ERR', 'ACK', 'NAK', 'PONG', 'STEP', 'LOG'
+    kind: str           # 'OK', 'ERR', 'ACK', 'NAK', 'PONG', 'STEP', 'PIPE', 'DUP', 'INFO', 'LOG'
     detail: str = ""    # trailing text
 
 
@@ -134,7 +134,7 @@ def decode_reply(line: bytes | str) -> Ack:
     if not text:
         return Ack(kind="", detail="")
     head, _, rest = text.partition(" ")
-    if head in ("OK", "ERR", "ACK", "NAK", "PONG", "STEP"):
+    if head in ("OK", "ERR", "ACK", "NAK", "PONG", "STEP", "PIPE", "DUP", "INFO"):
         return Ack(kind=head, detail=rest)
     return Ack(kind="LOG", detail=text)
 

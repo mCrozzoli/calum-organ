@@ -3,6 +3,7 @@
 // one at a time and each waits for its own OK; sender lines become events:
 //   log {line, level}   status {connected, port, playing}   peer {peer, ok, seq}
 //   step {step}         transport {playing}                  ready
+//   pipe {peer, mac, fw}  (the hub found a pipe board)      dup {peer, mac}
 //
 // The byte transport is pluggable: WebSerialTransport (a real USB port, via
 // the Web Serial API) or DemoTransport (demo.js, a simulated organ).
@@ -94,10 +95,20 @@ export class SerialLink {
       this._emit("step", { step });
       return;
     }
+    if (ack.kind === "ERR" && this._waiter?.expect === "PIPES") {
+      // A 1.1 hub doesn't know PIPES: not an error worth flagging.
+      this._emit("log", { line: "hub firmware 1.1: it can't list its pipes (update it in Boards)", level: "info" });
+      this._offerReply(ack);
+      return;
+    }
     this._emit("log", { line: `<< ${line}`, level: classify(ack) });
     if (ack.kind === "ACK" || ack.kind === "NAK") {
       const [peer, seq] = ack.detail.split(/\s+/).map((t) => parseInt(t, 10));
       if (!Number.isNaN(peer)) this._emit("peer", { peer, ok: ack.kind === "ACK", seq: seq || 0 });
+    } else if (ack.kind === "PIPE" || ack.kind === "DUP") {
+      const [peer, mac, fw] = ack.detail.split(/\s+/);
+      const i = parseInt(peer, 10);
+      if (i >= 0 && i < 8 && mac) this._emit(ack.kind === "PIPE" ? "pipe" : "dup", { peer: i, mac, fw: fw || null });
     } else if (ack.kind === "OK" && (ack.detail === "PLAY" || ack.detail === "STOP")) {
       this._setPlaying(ack.detail === "PLAY");
     } else if (ack.kind === "OK" && ack.detail === "READY") {
@@ -119,7 +130,7 @@ export class SerialLink {
     const w = this._waiter;
     if (!w) return;
     if (ack.kind === "OK" && ack.detail.startsWith(w.expect)) w.resolve(ack);
-    else if (ack.kind === "ERR") w.reject(new SenderError(`sender: ${ack.detail}`));
+    else if (ack.kind === "ERR") w.reject(new SenderError(`hub: ${ack.detail}`));
   }
 
   _failWaiter(err) {
@@ -166,7 +177,7 @@ export class SerialLink {
         this._emit("log", { line: `timeout (attempt ${attempt}/${this.retries})`, level: "warn" });
       }
     }
-    throw new LinkTimeout(`${expect} failed: no reply from the sender`);
+    throw new LinkTimeout(`${expect} failed: no reply from the hub`);
   }
 
   async sendPattern(tempo, grid) {
@@ -176,6 +187,9 @@ export class SerialLink {
   }
   sendPlay() { return this.request(protocol.encodePlay(), "PLAY"); }
   sendStop() { return this.request(protocol.encodeStop(), "STOP"); }
+  // Hub 1.2+: list the pipes it knows (PIPE lines, then OK PIPES). A 1.1
+  // hub answers ERR unknown.
+  listPipes() { return this.request("PIPES\n", "PIPES"); }
 }
 
 function classify(ack) {

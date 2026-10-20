@@ -65,8 +65,19 @@ export class FakeSender {
       this._write("OK STOP\n");
     } else if (line === "PING") {
       this._write("PONG\n");
+    } else if (line === "PIPES") {
+      this.announcePipes();
+      this._write("OK PIPES\n");
     } else {
       this._write(`ERR unknown: ${line}\n`);
+    }
+  }
+
+  // Like a 1.2 hub hearing its pipes say hello (offline ones stay silent).
+  announcePipes() {
+    for (let i = 0; i < 8; i++) {
+      if (this._offline.has(String.fromCharCode(65 + i))) continue;
+      this._write(`PIPE ${i} DE:E0:00:00:00:0${i} 1.2\n`);
     }
   }
 
@@ -101,6 +112,7 @@ export class DemoTransport {
                              this.options);
     this.sender = s;
     setTimeout(() => { if (this.sender === s) onData("OK READY\n"); }, 30);
+    setTimeout(() => { if (this.sender === s) s.announcePipes(); }, 250);
   }
 
   async write(text) {

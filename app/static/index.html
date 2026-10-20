@@ -28,7 +28,7 @@
 </head>
 <body data-role="unknown">
   <header class="topbar">
-    <div class="brand">Calum Organ <span class="ver">v1.1 · <span id="modeName">…</span></span></div>
+    <div class="brand">Calum Organ <span class="ver">v1.2 · <span id="modeName">…</span></span></div>
 
     <div class="group conn host-only organ-only">
       <select id="portSelect" aria-label="Serial port"></select>
@@ -66,7 +66,7 @@
           <button id="playTogether" role="menuitem" class="host-only organ-only">Play together…</button>
           <button id="exportPresets" role="menuitem" class="host-only">Export presets…</button>
           <button id="importPresets" role="menuitem" class="host-only">Import presets…</button>
-          <button id="updateFirmware" role="menuitem" class="host-only organ-only">Update board firmware…</button>
+          <button id="updateFirmware" role="menuitem" class="host-only organ-only">Boards: hub &amp; pipes…</button>
           <button id="openAbout" role="menuitem">About &amp; credits…</button>
         </div>
       </details>
@@ -237,7 +237,7 @@
 
   <dialog id="aboutDialog" class="wide about" aria-labelledby="aboutTitle">
     <form method="dialog">
-      <h2 id="aboutTitle">Calum Organ <span class="ver">v1.1</span></h2>
+      <h2 id="aboutTitle">Calum Organ <span class="ver">v1.2</span></h2>
       <p>A step sequencer for Calum's pipe organ: each pipe has a valve driven
         by an ESP32 board, and the boards play together over ESP-NOW. Draw a
         pattern and the organ plays it. Without the organ, a simulated one
@@ -268,9 +268,9 @@
       <ul>
         <li>ESP32 boards and ESP-NOW by Espressif. Firmware built with the
           Arduino-ESP32 core (LGPL-2.1) and ESP-IDF (Apache-2.0).</li>
-        <li>Firmware updates in the browser:
-          <a href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noopener">ESP Web Tools</a>
-          (ESPHome, Apache-2.0).</li>
+        <li>Installing firmware in the browser:
+          <a href="https://github.com/espressif/esptool-js" target="_blank" rel="noopener">esptool-js</a>
+          (Espressif, Apache-2.0).</li>
         <li>Local app: Python with pyserial (BSD). QR codes for playing together:
           <a href="https://github.com/kazuhikoarase/qrcode-generator" target="_blank" rel="noopener">qrcode-generator</a>
           (Kazuhiko Arase, MIT).</li>
@@ -307,17 +307,51 @@
     </form>
   </dialog>
 
-  <dialog id="firmwareDialog" class="wide">
+  <dialog id="boardsDialog" class="wide boards" aria-labelledby="boardsTitle">
     <form method="dialog">
-      <p class="confirm-title">Update board firmware</p>
-      <p class="confirm-body">
-        Installs Calum Organ v1.1 on an ESP32 over USB. Update the sender
-        <b>and every pipe</b>: boards on different versions don't understand
-        each other. If a board isn't found, hold its BOOT button while
-        clicking Connect.
-      </p>
-      <div id="firmwareButtons"><p class="confirm-body">Loading the updater…</p></div>
-      <menu><button value="close">Done</button></menu>
+      <p class="confirm-title" id="boardsTitle">Boards: hub &amp; pipes</p>
+      <p class="confirm-body">Set up the organ's boards one at a time over USB. The <b>hub</b> is
+        the board that stays plugged into this computer to play; each <b>pipe</b> board drives
+        one pipe, A–H. Give every pipe its own letter: the hub then finds them by itself.</p>
+
+      <div class="hub-hears" id="hubHears" hidden>
+        <p class="muted">Pipes the hub hears right now:</p>
+        <div class="hub-pipes" id="hubPipes"></div>
+      </div>
+
+      <div id="boardNone">
+        <button type="button" id="boardConnect" class="accent">Connect a board…</button>
+        <p class="muted">Plug one board into this computer by USB, then pick it in Chrome's list.
+          If the hub is connected for playing, it's disconnected while you work here.</p>
+      </div>
+
+      <div id="boardCard" hidden>
+        <p class="board-what" id="boardWhat"></p>
+        <p class="muted board-mac" id="boardMac"></p>
+        <fieldset class="board-role">
+          <legend>This board is</legend>
+          <label><input type="radio" name="boardRole" value="hub"> the hub</label>
+          <label><input type="radio" name="boardRole" value="pipe"> a pipe:
+            <select id="boardPipe" aria-label="Which pipe"></select></label>
+        </fieldset>
+        <p class="board-warn" id="boardWarn" hidden></p>
+        <div class="board-actions">
+          <button type="button" id="boardInstall" class="accent"></button>
+          <button type="button" id="boardSetPipe"></button>
+          <button type="button" id="boardTest">Click the valve</button>
+          <button type="button" id="boardNext">Next board…</button>
+        </div>
+        <div class="board-progress" id="boardProgress" hidden><i id="boardBar"></i></div>
+        <p class="board-status" id="boardStatus" role="status"></p>
+      </div>
+
+      <details class="board-log">
+        <summary>Details</summary>
+        <pre id="boardLog"></pre>
+      </details>
+      <p class="muted">If a board isn't found or won't install, hold its <b>BOOT</b> button
+        while you click, then let go.</p>
+      <menu><button value="close">Close</button></menu>
     </form>
   </dialog>
 

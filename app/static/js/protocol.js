@@ -60,7 +60,8 @@ export function decodePattern(line) {
   return { tempo, rows, cols, grid };
 }
 
-const KINDS = new Set(["OK", "ERR", "ACK", "NAK", "PONG", "STEP"]);
+// PIPE/DUP: the hub found a pipe board (1.2+); INFO: a board describing itself.
+const KINDS = new Set(["OK", "ERR", "ACK", "NAK", "PONG", "STEP", "PIPE", "DUP", "INFO"]);
 
 // -> { kind, detail }; kind is "LOG" for anything unrecognised, "" for blank.
 export function decodeReply(line) {

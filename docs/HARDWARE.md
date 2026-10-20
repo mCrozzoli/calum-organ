@@ -2,9 +2,11 @@
 
 ## Boards (ESP-NOW peers)
 
-The pipe order is set in `firmware/*/peers.h` (both copies must match).
-To read a new board's MAC, flash `tools/get_mac/get_mac.ino` and open the
-Serial Monitor at 115200.
+Since firmware 1.2 each pipe board stores its own letter (set in the app:
+More ▾ → Boards) and the hub finds the pipes by themselves, so this table
+is no longer needed to add or swap a board. It stays in `firmware/*/peers.h`
+as the hub's fallback for pipes still on 1.1, and as a record of
+Calum's boards. (The Boards panel shows any board's MAC.)
 
 | Pipe | MAC | Notes |
 |---|---|---|

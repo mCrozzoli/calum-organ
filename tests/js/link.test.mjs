@@ -158,3 +158,31 @@ test("online backend: presets are kept in browser storage", async () => {
   await assert.rejects(b.presets.load("alpha"), /not found/);
   await assert.rejects(b.presets.save("bad", { tempo: 5, grid: [[1]] }), protocol.ProtocolError);
 });
+
+// ------------------------------------------------------------------ pipes the hub hears (1.2)
+test("link: the hub's PIPE and DUP lines become events", async () => {
+  const { link, events } = await openDemo({ offline: new Set(["C"]) });
+  // the demo hub announces its pipes shortly after booting, like a real one
+  assert.ok(await waitFor(() => ofType(events, "pipe").length === 7));
+  assert.deepEqual(ofType(events, "pipe")[0], { type: "pipe", peer: 0, mac: "DE:E0:00:00:00:00", fw: "1.2" });
+  assert.ok(!ofType(events, "pipe").some((e) => e.peer === 2), "offline pipe C stays silent");
+  await link.listPipes();
+  assert.equal(ofType(events, "pipe").length, 14);
+  link._onLine("DUP 3 AA:BB:CC:DD:EE:FF");
+  assert.deepEqual(ofType(events, "dup")[0], { type: "dup", peer: 3, mac: "AA:BB:CC:DD:EE:FF", fw: null });
+  link._onLine("PIPE 9 AA:BB:CC:DD:EE:FF 1.2");     // out of range: ignored
+  assert.equal(ofType(events, "pipe").length, 14);
+  await link.close();
+});
+
+test("link: a 1.1 hub's answer to PIPES isn't flagged as an error", async () => {
+  const events = [];
+  const link = new SerialLink((e) => events.push(e), { ackTimeoutMs: 300, retries: 1 });
+  const transport = { onData: null, async open(onData) { this.onData = onData; },
+    async write(t) { if (t === "PIPES\n") setTimeout(() => this.onData("ERR unknown\n"), 5); },
+    async close() {} };
+  await link.open(transport, "old hub");
+  await assert.rejects(link.listPipes(), SenderError);
+  assert.ok(!events.some((e) => e.type === "log" && e.level === "err"));
+  await link.close();
+});

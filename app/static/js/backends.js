@@ -233,6 +233,8 @@ export class OnlineBackend {
       }
       throw e;
     }
+    // Which pipes does the hub hear? (A 1.1 hub doesn't know: fine.)
+    this.link.listPipes().catch(() => {});
   }
 
   disconnect() { return this.link.close(); }
